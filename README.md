@@ -1,48 +1,38 @@
-# LCN Alarmanlage – Version 0.1.1
+# LCN Alarmanlage für IP-Symcon 9
 
-Kern-Testversion für IP-Symcon 9.0. Version 0.1.1 ist ein gezieltes, rollbackfähiges Update auf 0.1.0. GUIDs, Prefix, Property-Namen und bestehende Sensorzuordnungen bleiben erhalten.
+## Version 0.1.2
 
-## Enthalten
+Version 0.1.2 erweitert den real getesteten Alarmkern 0.1.1 ausschließlich um Paniklicht und eine lokale LCN-/Licht-Quittierung. Push, E-Mail und Samsung-TV bleiben absichtlich noch außen vor.
 
-- native LCN-GUS-Binärstatus-Booleanvariablen als Alarmquellen
-- vollständig ereignisgesteuert über `VM_UPDATE`
-- kein LCN-Polling und kein `LCN_RequestStatus()` im Normalbetrieb
-- Flankenerkennung je GUS
-- zentrale Alarm-Session mit Semaphore-Kollisionsschutz
-- gleichzeitige Meldungen beliebig vieler GUS
-- Bewegungsprofil mit Reihenfolge und Millisekunden-Zeitstempeln
-- manuell EIN/AUS
-- Zeitautomatik mit manueller Übersteuerung bis zur nächsten Zeitgrenze
-- automatisches Ende der Alarmsignalisierung nach konfigurierbarer Zeit
-- Quittierung beendet ausschließlich den aktuellen Alarm; die Anlage bleibt EIN
-- nach Alarmende: erst freie Melder, danach Countdown `Wieder scharf in N s`
-- persistente aktuelle/letzte Alarm-Session und Wiederanlauf nach Symcon-Neustart
-- sicheres Abschalten bei Verlust einer konfigurierten Sensorvariable
+### Alarmquellen
 
-Noch **nicht** enthalten: Paniklicht, LCN-Quittierung über GT8/GT2, Push, E-Mail, Samsung-TV und TV-Alarm-App.
+Vorhandene native LCN-GUS-Binäreingänge werden als Boolean-Variablen ausgewählt. Die Auswertung erfolgt ereignisgesteuert über `VM_UPDATE`; es gibt kein zyklisches LCN-Polling.
 
-## Update von 0.1.0
+### Paniklicht
 
-Repository-Ordner vollständig durch Version 0.1.1 ersetzen und das Modul in Symcon aktualisieren. Die bestehende Instanz bleibt erhalten; die drei konfigurierten GUS sowie Alarmdauer, Wieder-Scharf-Verzögerung und Automatikwerte werden nicht umbenannt oder migriert.
+Als Panikziel wird die **Integer-Statusvariable** der vorhandenen `LCNLightGroup` ausgewählt. Die Alarmanlage verwendet die vorhandene Variablenaktion:
 
-## Verhalten von `Alarm deaktivieren`
+- Alarmbeginn: Zielwert `1` (EIN)
+- Quittierung / automatisches Alarmende / Anlage AUS bei aktivem Alarm: Zielwert `0` (AUS)
 
-`Alarm deaktivieren` ist **keine Unscharfschaltung**. Ablauf:
+Die bestehende Gruppenlogik entscheidet weiterhin selbst, welche Gruppenmitglieder tatsächlich einen LCN-Kurzbefehl benötigen. Das Alarmmodul verändert weder die Lichtgruppenbibliothek noch deren Konfiguration.
 
-1. aktive Alarm-Session wird quittiert und gegen neue Trigger verriegelt
-2. `ALARM AUSGELÖST` wird beendet
-3. Hauptschalter `Alarmanlage EIN/AUS` bleibt EIN
-4. solange ein GUS aktiv ist: `Warte auf freie Bewegungsmelder`
-5. sobald alle GUS frei sind, startet die konfigurierte Verzögerung
-6. Status zählt lokal in Symcon: `Wieder scharf in 60 s`, `59 s`, ...
-7. danach wieder `ALARMANLAGE SCHARF`
+### Quittierung über GT8/GT2/Licht
 
-Nur der Hauptschalter `Alarmanlage EIN/AUS` schaltet die gesamte Anlage unscharf.
+Für jedes gewünschte Paniklicht wird dessen **Boolean-Statusvariable der LCN-Light-Instanz** ausgewählt. Während eines aktiven Alarms sind die Paniklichter eingeschaltet. Eine echte Statusflanke `EIN -> AUS`, z. B. als Ergebnis eines normalen kurzen GT8/GT2-Tastendrucks, quittiert die aktuelle Alarm-Session.
 
-## Traffic
+Das Alarmmodul erkennt dabei bewusst **nicht das rohe GT8/GT2-Tastentelegramm**, sondern die zuverlässig rückgemeldete Ausschaltung des ausgewählten Lichts. Deshalb würde auch eine andere reale Bedienung, die eines dieser ausgewählten Paniklichter während des aktiven Alarms von EIN auf AUS schaltet, quittieren.
 
-Der neue Countdown-Timer läuft nur während der kurzen Wieder-Scharf-Phase einmal pro Sekunde und aktualisiert ausschließlich die lokale Symcon-Statusvariable. Er fragt weder LCN noch GUS ab und erzeugt daher keinen LCN-Busverkehr.
+Wichtig: Das Alarmmodul wertet nicht einfach „irgendeine Statusänderung“ aus. `AUS -> EIN` durch PANIK EIN quittiert nie. Beim PANIK AUS ist die Session bereits auf Wieder-Scharf-Wartezustand verriegelt und kann sich deshalb nicht selbst quittieren.
 
-## Test
+### Quittierung
 
-Siehe `docs/TESTPLAN-0.1.1.md`. Vor Erweiterungen um Paniklicht, Push, E-Mail oder Samsung-TV sollen insbesondere Quittierung, Countdown, Mehrfach-GUS und Neustartverhalten getestet werden.
+Eine Quittierung beendet nur den aktuellen Alarm. Der Hauptschalter bleibt EIN. Nach freien Bewegungsmeldern läuft der Countdown `Wieder scharf in …`; anschließend ist die Anlage wieder scharf.
+
+### Updateprinzip
+
+- Bibliotheks-GUID bleibt `{931F4DEE-ED55-42F9-9DDB-A8C23293A89D}`
+- Modul-GUID bleibt `{F5B0CD30-B98C-4580-BD71-432F3018628F}`
+- Prefix bleibt `LCNALARM`
+- bestehende Sensor-, Zeit- und Alarmkonfigurationen aus 0.1.1 bleiben erhalten
+- neue Panik-/Quittierfelder sind standardmäßig leer und damit wirkungslos

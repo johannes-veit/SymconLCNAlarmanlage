@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.1: Alarmkern mit Session-Quittierung und sichtbarem Countdown. Noch ohne Paniklicht, Push, E-Mail und Samsung-TV."
+            "label": "Testversion 0.1.2: stabiler Alarmkern aus 0.1.1 plus Paniklicht und Quittierung über ausgeschaltete Panik-Lichter. Noch ohne Push, E-Mail und Samsung-TV."
         },
         {
             "type": "List",
@@ -46,6 +46,63 @@
             ]
         },
         {
+            "type": "SelectVariable",
+            "name": "PanicGroupVariableID",
+            "caption": "Panik-Lichtgruppe – Statusvariable",
+            "validVariableTypes": [
+                1
+            ]
+        },
+        {
+            "type": "Label",
+            "label": "Bei Alarm wird die ausgewählte Lichtgruppe explizit auf EIN gesetzt; bei Quittierung, automatischem Alarmende oder vollständigem Ausschalten wieder explizit auf AUS. Die vorhandene Gruppenlogik bleibt unverändert."
+        },
+        {
+            "type": "List",
+            "name": "AcknowledgeLights",
+            "caption": "Alarm quittieren über Panik-Lichter",
+            "rowCount": 6,
+            "add": true,
+            "delete": true,
+            "changeOrder": true,
+            "columns": [
+                {
+                    "caption": "Aktiv",
+                    "name": "Enabled",
+                    "width": "70px",
+                    "add": true,
+                    "edit": {
+                        "type": "CheckBox"
+                    }
+                },
+                {
+                    "caption": "Bezeichnung",
+                    "name": "Name",
+                    "width": "auto",
+                    "add": "",
+                    "edit": {
+                        "type": "ValidationTextBox"
+                    }
+                },
+                {
+                    "caption": "LCN Licht – Status (Boolean)",
+                    "name": "VariableID",
+                    "width": "280px",
+                    "add": 0,
+                    "edit": {
+                        "type": "SelectVariable",
+                        "validVariableTypes": [
+                            0
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "type": "Label",
+            "label": "Quittierung nur bei einer echten EIN→AUS-Flanke während eines aktiven Alarms. PANIK EIN kann sich deshalb nicht selbst quittieren; PANIK AUS erfolgt erst nachdem die Alarm-Session bereits verriegelt wurde."
+        },
+        {
             "type": "NumberSpinner",
             "name": "AlarmDurationSeconds",
             "caption": "Alarmdauer bis automatische Abschaltung (Sekunden)",
@@ -67,7 +124,7 @@
     "actions": [
         {
             "type": "Label",
-            "label": "Keine LCN-Abfragen/Polling: Das Modul reagiert ausschließlich auf spontane VM_UPDATE-Meldungen der ausgewählten Boolean-Variablen."
+            "label": "Kein Polling: GUS und Quittier-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Die Panikgruppe erhält nur bei Alarmbeginn/-ende einen definierten EIN/AUS-Aktionsaufruf."
         }
     ]
 }

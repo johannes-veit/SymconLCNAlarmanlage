@@ -21,6 +21,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterPropertyString('Sensors', '[]');
         $this->RegisterPropertyInteger('AlarmDurationSeconds', 300);
         $this->RegisterPropertyInteger('RearmDelaySeconds', 60);
+        $this->RegisterPropertyInteger('PanicGroupVariableID', 0);
+        $this->RegisterPropertyString('AcknowledgeLights', '[]');
 
         $this->RegisterAttributeInteger('ManualOverride', self::OVERRIDE_NONE);
         $this->RegisterAttributeBoolean('ArmedReady', false);
@@ -29,6 +31,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterAttributeInteger('SessionCounter', 0);
         $this->RegisterAttributeInteger('RearmNotBefore', 0);
         $this->RegisterAttributeString('RegisteredSensorIDs', '[]');
+        $this->RegisterAttributeString('RegisteredAcknowledgeIDs', '[]');
+        $this->RegisterAttributeInteger('RegisteredPanicVariableID', 0);
 
         $created = $this->RegisterVariableBoolean(
             'Arm',
@@ -190,7 +194,11 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         if ($Message === OM_UNREGISTER) {
-            $this->HandleSensorUnavailable($SenderID);
+            if ($this->IsSensorVariable($SenderID)) {
+                $this->HandleSensorUnavailable($SenderID);
+            } elseif ($this->IsAcknowledgeVariable($SenderID) || $SenderID === $this->PanicGroupVariableID()) {
+                $this->HandleAuxiliaryUnavailable($SenderID);
+            }
             return;
         }
 
@@ -199,8 +207,13 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         // $Data wird absichtlich nicht ausgewertet. Der aktuelle Zustand wird dokumentiert
-        // direkt über die SenderID aus der Boolean-Variable gelesen.
-        $this->ProcessSensorUpdate($SenderID);
+        // direkt über die SenderID aus der Variable gelesen.
+        if ($this->IsSensorVariable($SenderID)) {
+            $this->ProcessSensorUpdate($SenderID);
+        }
+        if ($this->IsAcknowledgeVariable($SenderID)) {
+            $this->ProcessAcknowledgeLightUpdate($SenderID);
+        }
     }
 
     public function RequestAction(string $Ident, mixed $Value): void
@@ -278,12 +291,14 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $startRearmTimer = false;
+        $endedSessionID = '';
         try {
             $session = $this->ReadSession('CurrentSession');
             if (($session['state'] ?? self::SESSION_NONE) !== self::SESSION_ACTIVE) {
                 return;
             }
 
+            $endedSessionID = (string) ($session['id'] ?? '');
             $session['state'] = self::SESSION_REARM_WAIT;
             $session['signalEndedAt'] = microtime(true);
             $session['pendingEndReason'] = 'automatic-timeout';
@@ -306,6 +321,10 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetValue('AlarmActive', false);
         $this->SetAlarmControlsVisible(false);
         $this->SetTimerInterval('RearmDisplay', 0);
+
+        if ($endedSessionID !== '') {
+            $this->SetPanicForSession($endedSessionID, false, 'automatic-timeout');
+        }
 
         if ($startRearmTimer) {
             $this->ScheduleRearmFromAttribute();
@@ -424,9 +443,17 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('ScheduleTimer', 0);
 
         $this->UnregisterOldSensorMessages();
+        $this->UnregisterOldAcknowledgeMessages();
+        $this->UnregisterOldPanicReference();
 
         [$sensorMap, $errors] = $this->BuildSensorMap();
+        [$acknowledgeMap, $acknowledgeErrors] = $this->BuildAcknowledgeMap($sensorMap);
+        [$panicVariableID, $panicErrors] = $this->BuildPanicConfig();
+        $errors = array_merge($errors, $acknowledgeErrors, $panicErrors);
+
         $this->SetBuffer('SensorMap', $this->Encode($sensorMap));
+        $this->SetBuffer('AcknowledgeMap', $this->Encode($acknowledgeMap));
+        $this->SetBuffer('PanicGroupVariableID', (string) $panicVariableID);
 
         if ($errors !== []) {
             $this->SetBuffer('ConfigurationOK', '0');
@@ -470,7 +497,31 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
         $this->SetBuffer('SensorStates', $this->Encode($states));
         $this->WriteAttributeString('RegisteredSensorIDs', $this->Encode(array_map('intval', array_keys($sensorMap))));
-        $this->SetSummary(count($sensorMap) . ' GUS');
+
+        $acknowledgeStates = [];
+        foreach ($acknowledgeMap as $variableID => $light) {
+            $acknowledgeStates[(string) $variableID] = (bool) GetValue((int) $variableID);
+            $this->RegisterMessage((int) $variableID, VM_UPDATE);
+            $this->RegisterMessage((int) $variableID, OM_UNREGISTER);
+            $this->RegisterReference((int) $variableID);
+        }
+        $this->SetBuffer('AcknowledgeStates', $this->Encode($acknowledgeStates));
+        $this->WriteAttributeString('RegisteredAcknowledgeIDs', $this->Encode(array_map('intval', array_keys($acknowledgeMap))));
+
+        if ($panicVariableID > 0) {
+            $this->RegisterMessage($panicVariableID, OM_UNREGISTER);
+            $this->RegisterReference($panicVariableID);
+            $this->WriteAttributeInteger('RegisteredPanicVariableID', $panicVariableID);
+        }
+
+        $summary = count($sensorMap) . ' GUS';
+        if ($panicVariableID > 0) {
+            $summary .= ' · Panik';
+        }
+        if ($acknowledgeMap !== []) {
+            $summary .= ' · ' . count($acknowledgeMap) . ' Quittier-Lichter';
+        }
+        $this->SetSummary($summary);
 
         $session = $this->ReadSession('CurrentSession');
         $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
@@ -517,6 +568,16 @@ class LCNAlarmanlage extends IPSModuleStrict
             }
         }
 
+        // Bei einem Neustart während einer noch aktiven Alarm-Session wird die
+        // Panikgruppe deterministisch erneut auf EIN angefordert. Die Gruppenlogik
+        // sendet nur an Leuchten, die laut Rückmeldung noch AUS sind.
+        if ($sessionState === self::SESSION_ACTIVE) {
+            $sessionID = (string) ($session['id'] ?? '');
+            if ($sessionID !== '') {
+                $this->SetPanicForSession($sessionID, true, 'restart');
+            }
+        }
+
         // Baseline und persistenter Zustand sind jetzt konsistent. Ab hier dürfen
         // neue FALSE->TRUE-Flanken als echte Bewegungsereignisse ausgewertet werden.
         $this->SetBuffer('RuntimeReady', '1');
@@ -545,6 +606,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $firstAlarmTrigger = false;
+        $alarmSessionID = '';
         $scheduleRearm = false;
         $cancelRearm = false;
         $changed = false;
@@ -616,6 +678,7 @@ class LCNAlarmanlage extends IPSModuleStrict
                     $duration = max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
                     $this->SetTimerInterval('AlarmTimeout', $duration * 1000);
                     $firstAlarmTrigger = true;
+                    $alarmSessionID = (string) ($session['id'] ?? '');
                 }
             }
         } finally {
@@ -636,12 +699,157 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         if ($firstAlarmTrigger) {
-            // Hier später nur nicht-kritische Folgeschritte anstoßen. Vor externen
-            // Aktionen (Panik/Push/TV/E-Mail) wird die Session-ID erneut geprüft.
+            // Externe/langsamere Aktionen laufen außerhalb der Engine-Semaphore.
+            // Vor und nach PANIK EIN wird die Session-ID geprüft, damit eine nahezu
+            // gleichzeitige Quittierung kein dauerhaftes Licht-EIN hinterlässt.
+            if ($alarmSessionID !== '') {
+                $this->SetPanicForSession($alarmSessionID, true, 'alarm-start');
+            }
             $this->SendDebug('ALARM', 'Neue Alarm-Session durch Variable #' . $VariableID, 0);
         }
 
         $this->RefreshDisplay();
+    }
+
+    private function ProcessAcknowledgeLightUpdate(int $VariableID): void
+    {
+        if (!IPS_VariableExists($VariableID)) {
+            $this->HandleAuxiliaryUnavailable($VariableID);
+            return;
+        }
+
+        $newValue = (bool) GetValue($VariableID);
+        $source = '';
+        $shouldAcknowledge = false;
+
+        if (!$this->AcquireEngineLock()) {
+            $this->ReportLockFailure('ProcessAcknowledgeLightUpdate #' . $VariableID);
+            return;
+        }
+
+        try {
+            $states = $this->ReadAcknowledgeStates();
+            $key = (string) $VariableID;
+
+            if (!array_key_exists($key, $states)) {
+                $states[$key] = $newValue;
+                $this->SetBuffer('AcknowledgeStates', $this->Encode($states));
+                return;
+            }
+
+            $oldValue = (bool) $states[$key];
+            if ($oldValue === $newValue) {
+                return;
+            }
+
+            $states[$key] = $newValue;
+            $this->SetBuffer('AcknowledgeStates', $this->Encode($states));
+
+            if ($this->GetBuffer('RuntimeReady') !== '1') {
+                return;
+            }
+
+            // PANIK EIN erzeugt ausschließlich AUS->EIN. Quittiert wird bewusst nur
+            // eine echte EIN->AUS-Flanke während einer AKTIVEN Alarm-Session. Beim
+            // späteren PANIK AUS ist die Session bereits rearm_wait und kann sich
+            // deshalb nicht selbst quittieren.
+            if ($oldValue && !$newValue) {
+                $session = $this->ReadSession('CurrentSession');
+                if (($session['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE) {
+                    $shouldAcknowledge = true;
+                    $source = 'LCN-Licht: ' . $this->AcknowledgeLightName($VariableID);
+                }
+            }
+        } finally {
+            IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
+
+        if ($shouldAcknowledge) {
+            $this->AcknowledgeAlarmInternal($source);
+        }
+    }
+
+    private function SetPanicForSession(string $SessionID, bool $On, string $Reason): void
+    {
+        $variableID = $this->PanicGroupVariableID();
+        if ($variableID <= 0) {
+            return;
+        }
+
+        if (!IPS_VariableExists($variableID)) {
+            $this->HandleAuxiliaryUnavailable($variableID);
+            return;
+        }
+
+        if ($On && !$this->IsActiveSession($SessionID)) {
+            return;
+        }
+
+        try {
+            $ok = RequestActionEx($variableID, $On ? 1 : 0, 'LCN Alarmanlage');
+            if (!$ok) {
+                throw new Exception('RequestActionEx meldete FALSE');
+            }
+        } catch (Throwable $e) {
+            IPS_LogMessage(
+                'LCN Alarmanlage #' . $this->InstanceID,
+                'Paniklicht ' . ($On ? 'EIN' : 'AUS') . ' fehlgeschlagen (' . $Reason . '): ' . $e->getMessage()
+            );
+            $this->SendDebug('Panic', 'Fehler: ' . $e->getMessage(), 0);
+            return;
+        }
+
+        // Race-Schutz: Wurde zwischen Vorprüfung und dem externen Gruppenbefehl der
+        // Alarm quittiert, wird die Gruppe sofort wieder deterministisch ausgeschaltet.
+        // Falls in einem extremen Randfall inzwischen bereits eine NEUE aktive Session
+        // existiert, darf deren Paniklicht durch das Cleanup der alten Session nicht
+        // ausgeschaltet werden.
+        if ($On && !$this->IsActiveSession($SessionID) && !$this->HasAnyActiveSession()) {
+            try {
+                RequestActionEx($variableID, 0, 'LCN Alarmanlage');
+            } catch (Throwable $e) {
+                IPS_LogMessage(
+                    'LCN Alarmanlage #' . $this->InstanceID,
+                    'Paniklicht Race-Cleanup AUS fehlgeschlagen: ' . $e->getMessage()
+                );
+            }
+        }
+    }
+
+    private function HasAnyActiveSession(): bool
+    {
+        if (!$this->AcquireEngineLock()) {
+            $this->ReportLockFailure('HasAnyActiveSession');
+            // Bei Unsicherheit niemals ein mögliches neues Alarmlicht ausschalten.
+            return true;
+        }
+
+        try {
+            $session = $this->ReadSession('CurrentSession');
+            return ($session['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE;
+        } finally {
+            IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
+    }
+
+    private function IsActiveSession(string $SessionID): bool
+    {
+        if ($SessionID === '') {
+            return false;
+        }
+
+        if (!$this->AcquireEngineLock()) {
+            $this->ReportLockFailure('IsActiveSession');
+            return false;
+        }
+
+        try {
+            $session = $this->ReadSession('CurrentSession');
+            return (string) ($session['id'] ?? '') === $SessionID
+                && ($session['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE;
+        } finally {
+            IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
     }
 
     private function HandleSensorUnavailable(int $VariableID): void
@@ -671,6 +879,15 @@ class LCNAlarmanlage extends IPSModuleStrict
         );
     }
 
+    private function HandleAuxiliaryUnavailable(int $VariableID): void
+    {
+        IPS_LogMessage(
+            'LCN Alarmanlage #' . $this->InstanceID,
+            'Optionale Panik-/Quittierfunktion nicht mehr verfügbar: Variable #' . $VariableID
+        );
+        $this->SendDebug('AuxiliaryUnavailable', 'Variable #' . $VariableID, 0);
+    }
+
     private function AcknowledgeAlarmInternal(string $Source): void
     {
         if (!$this->AcquireEngineLock()) {
@@ -679,11 +896,14 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $startRearmTimer = false;
+        $endedSessionID = '';
         try {
             $session = $this->ReadSession('CurrentSession');
             if (($session['state'] ?? self::SESSION_NONE) !== self::SESSION_ACTIVE) {
                 return;
             }
+
+            $endedSessionID = (string) ($session['id'] ?? '');
 
             // Die Alarmanlage selbst bleibt EIN. Nur die aktuelle Signalisierung wird
             // beendet und die Session für neue Auslösungen verriegelt, bis alle Melder
@@ -715,6 +935,10 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetValue('Acknowledge', false);
         $this->SetAlarmControlsVisible(false);
 
+        if ($endedSessionID !== '') {
+            $this->SetPanicForSession($endedSessionID, false, 'acknowledged/' . $Source);
+        }
+
         if ($startRearmTimer) {
             $this->ScheduleRearmFromAttribute();
         }
@@ -744,13 +968,18 @@ class LCNAlarmanlage extends IPSModuleStrict
         $stopRearmDisplayTimer = false;
         $hideAlarmControls = false;
         $alarmBecameInactive = false;
+        $panicOffSessionID = '';
 
         try {
             $this->SetValue('Arm', $Armed);
 
             if (!$Armed) {
                 // Zuerst intern unscharf und Session beenden. Externe/langsame Aktionen
-                // werden in späteren Versionen erst NACH diesem kritischen Abschnitt ausgeführt.
+                // werden erst NACH diesem kritischen Abschnitt ausgeführt.
+                $current = $this->ReadSession('CurrentSession');
+                if (($current['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE) {
+                    $panicOffSessionID = (string) ($current['id'] ?? '');
+                }
                 $this->WriteAttributeBoolean('ArmedReady', false);
                 $this->WriteAttributeInteger('RearmNotBefore', 0);
                 $this->FinalizeCurrentSession($Reason);
@@ -787,6 +1016,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
         if ($hideAlarmControls) {
             $this->SetAlarmControlsVisible(false);
+        }
+        if ($panicOffSessionID !== '') {
+            $this->SetPanicForSession($panicOffSessionID, false, 'anlage-aus/' . $Reason);
         }
 
         $this->RefreshDisplay();
@@ -1058,6 +1290,80 @@ class LCNAlarmanlage extends IPSModuleStrict
         return [$map, $errors];
     }
 
+    private function BuildAcknowledgeMap(array $SensorMap): array
+    {
+        $decoded = json_decode($this->ReadPropertyString('AcknowledgeLights'), true);
+        if (!is_array($decoded)) {
+            return [[], ['Quittier-Lichterliste ist ungültig']];
+        }
+
+        $map = [];
+        $errors = [];
+        foreach ($decoded as $index => $row) {
+            if (!is_array($row) || !(bool) ($row['Enabled'] ?? false)) {
+                continue;
+            }
+
+            $variableID = (int) ($row['VariableID'] ?? 0);
+            if ($variableID <= 0 || !IPS_VariableExists($variableID)) {
+                $errors[] = 'Quittier-Licht Zeile ' . ($index + 1) . ': Variable fehlt';
+                continue;
+            }
+
+            $variable = IPS_GetVariable($variableID);
+            if ((int) $variable['VariableType'] !== VARIABLETYPE_BOOLEAN) {
+                $errors[] = 'Quittier-Licht Zeile ' . ($index + 1) . ': keine Boolean-Variable';
+                continue;
+            }
+
+            if (isset($SensorMap[(string) $variableID])) {
+                $errors[] = 'Variable #' . $variableID . ' darf nicht zugleich GUS und Quittier-Licht sein';
+                continue;
+            }
+            if (isset($map[(string) $variableID])) {
+                $errors[] = 'Quittier-Licht Variable #' . $variableID . ' ist doppelt eingetragen';
+                continue;
+            }
+
+            $name = trim((string) ($row['Name'] ?? ''));
+            if ($name === '') {
+                $name = IPS_GetName($variableID);
+            }
+
+            $map[(string) $variableID] = [
+                'id' => $variableID,
+                'name' => $name
+            ];
+        }
+
+        return [$map, $errors];
+    }
+
+    private function BuildPanicConfig(): array
+    {
+        $variableID = $this->ReadPropertyInteger('PanicGroupVariableID');
+        if ($variableID <= 0) {
+            return [0, []];
+        }
+        if (!IPS_VariableExists($variableID)) {
+            return [0, ['Panikgruppe: Statusvariable fehlt']];
+        }
+
+        $variable = IPS_GetVariable($variableID);
+        if ((int) $variable['VariableType'] !== VARIABLETYPE_INTEGER) {
+            return [0, ['Panikgruppe: Statusvariable muss Integer sein']];
+        }
+
+        // Dokumentierter Symcon-Weg: nur Variablen mit vorhandener Aktion zulassen.
+        // Damit muss das Alarmmodul weder VariableAction noch VariableCustomAction
+        // semantisch nachbilden und bleibt gegenüber Aktionsskripten/Standardaktionen robust.
+        if (!HasAction($variableID)) {
+            return [0, ['Panikgruppe: Statusvariable besitzt keine nutzbare Aktion']];
+        }
+
+        return [$variableID, []];
+    }
+
     private function UnregisterOldSensorMessages(): void
     {
         $old = json_decode($this->ReadAttributeString('RegisteredSensorIDs'), true);
@@ -1078,10 +1384,77 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->WriteAttributeString('RegisteredSensorIDs', '[]');
     }
 
+    private function UnregisterOldAcknowledgeMessages(): void
+    {
+        $old = json_decode($this->ReadAttributeString('RegisteredAcknowledgeIDs'), true);
+        if (!is_array($old)) {
+            $old = [];
+        }
+
+        foreach ($old as $variableID) {
+            $variableID = (int) $variableID;
+            if ($variableID <= 0) {
+                continue;
+            }
+            $this->UnregisterMessage($variableID, VM_UPDATE);
+            $this->UnregisterMessage($variableID, OM_UNREGISTER);
+            $this->UnregisterReference($variableID);
+        }
+
+        $this->WriteAttributeString('RegisteredAcknowledgeIDs', '[]');
+    }
+
+    private function UnregisterOldPanicReference(): void
+    {
+        $old = $this->ReadAttributeInteger('RegisteredPanicVariableID');
+        if ($old > 0) {
+            $this->UnregisterMessage($old, OM_UNREGISTER);
+            $this->UnregisterReference($old);
+        }
+        $this->WriteAttributeInteger('RegisteredPanicVariableID', 0);
+    }
+
     private function ReadSensorMap(): array
     {
         $decoded = json_decode($this->GetBuffer('SensorMap'), true);
         return is_array($decoded) ? $decoded : [];
+    }
+
+    private function ReadAcknowledgeMap(): array
+    {
+        $decoded = json_decode($this->GetBuffer('AcknowledgeMap'), true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function ReadAcknowledgeStates(): array
+    {
+        $decoded = json_decode($this->GetBuffer('AcknowledgeStates'), true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function PanicGroupVariableID(): int
+    {
+        return (int) $this->GetBuffer('PanicGroupVariableID');
+    }
+
+    private function IsSensorVariable(int $VariableID): bool
+    {
+        return isset($this->ReadSensorMap()[(string) $VariableID]);
+    }
+
+    private function IsAcknowledgeVariable(int $VariableID): bool
+    {
+        return isset($this->ReadAcknowledgeMap()[(string) $VariableID]);
+    }
+
+    private function AcknowledgeLightName(int $VariableID): string
+    {
+        $map = $this->ReadAcknowledgeMap();
+        $key = (string) $VariableID;
+        if (isset($map[$key]['name'])) {
+            return (string) $map[$key]['name'];
+        }
+        return IPS_VariableExists($VariableID) ? IPS_GetName($VariableID) : ('#' . $VariableID);
     }
 
     private function ReadSensorStates(): array
