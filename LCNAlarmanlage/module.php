@@ -158,6 +158,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $this->RegisterTimer('AlarmTimeout', 0, 'LCNALARM_AlarmTimeout($_IPS[\'TARGET\']);');
         $this->RegisterTimer('RearmTimeout', 0, 'LCNALARM_RearmTimeout($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('RearmDisplay', 0, 'LCNALARM_RearmDisplay($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ScheduleTimer', 0, 'LCNALARM_ScheduleTimer($_IPS[\'TARGET\']);');
 
         $this->RegisterMessage(0, IPS_KERNELSTARTED);
@@ -170,6 +171,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         // Interne Timer sind stateless und werden nach jedem ApplyChanges bewusst neu aufgebaut.
         $this->SetTimerInterval('AlarmTimeout', 0);
         $this->SetTimerInterval('RearmTimeout', 0);
+        $this->SetTimerInterval('RearmDisplay', 0);
         $this->SetTimerInterval('ScheduleTimer', 0);
 
         if (IPS_GetKernelRunlevel() !== KR_READY) {
@@ -255,13 +257,14 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->ScheduleNextBoundary();
     }
 
-    /** Zentraler Quittierungsweg. Spätere GT8/GT2/Push/E-Mail-Quittierungen rufen nur diese Funktion auf. */
+    /**
+     * Zentraler Quittierungsweg. Eine Quittierung beendet ausschließlich die
+     * aktuelle Alarm-Session. Die Alarmanlage selbst bleibt scharfgeschaltet.
+     * Spätere GT8/GT2/Push/E-Mail-Quittierungen rufen denselben Pfad auf.
+     */
     public function AcknowledgeAlarm(): void
     {
-        $this->WriteAttributeInteger('ManualOverride', self::OVERRIDE_OFF);
-        $this->SetArmedInternal(false, 'acknowledged');
-        $this->SetValue('Acknowledge', false);
-        $this->ScheduleNextBoundary();
+        $this->AcknowledgeAlarmInternal('symcon');
     }
 
     /** Einmal-Timer: beendet die aktive Alarmsignalisierung. */
@@ -283,6 +286,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
             $session['state'] = self::SESSION_REARM_WAIT;
             $session['signalEndedAt'] = microtime(true);
+            $session['pendingEndReason'] = 'automatic-timeout';
             $this->WriteSession('CurrentSession', $session);
             $this->WriteAttributeBoolean('ArmedReady', false);
 
@@ -301,6 +305,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $this->SetValue('AlarmActive', false);
         $this->SetAlarmControlsVisible(false);
+        $this->SetTimerInterval('RearmDisplay', 0);
 
         if ($startRearmTimer) {
             $this->ScheduleRearmFromAttribute();
@@ -313,6 +318,7 @@ class LCNAlarmanlage extends IPSModuleStrict
     public function RearmTimeout(): void
     {
         $this->SetTimerInterval('RearmTimeout', 0);
+        $this->SetTimerInterval('RearmDisplay', 0);
 
         if (!$this->AcquireEngineLock()) {
             $this->ReportLockFailure('RearmTimeout');
@@ -344,7 +350,7 @@ class LCNAlarmanlage extends IPSModuleStrict
                         $reschedule = true;
                     } else {
                         $session['endedAt'] = microtime(true);
-                        $session['endReason'] = 'automatic-timeout';
+                        $session['endReason'] = (string) ($session['pendingEndReason'] ?? 'automatic-timeout');
                         $session['state'] = 'ended';
                         $this->WriteSession('LastSession', $session);
                         $this->WriteSession('CurrentSession', []);
@@ -366,6 +372,26 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ($rearmed) {
             $this->SetValue('AlarmActive', false);
+        }
+
+        $this->RefreshDisplay();
+    }
+
+    /**
+     * Reiner Visualisierungs-Timer während der kurzen Wieder-Scharf-Verzögerung.
+     * Er erzeugt keinerlei LCN-Verkehr und verändert keine Alarmzustände.
+     */
+    public function RearmDisplay(): void
+    {
+        $session = $this->ReadSession('CurrentSession');
+        if (($session['state'] ?? self::SESSION_NONE) !== self::SESSION_REARM_WAIT) {
+            $this->SetTimerInterval('RearmDisplay', 0);
+            return;
+        }
+
+        $states = $this->ReadSensorStates();
+        if (!$this->AreAllSensorsClear($states) || $this->ReadAttributeInteger('RearmNotBefore') <= 0) {
+            $this->SetTimerInterval('RearmDisplay', 0);
         }
 
         $this->RefreshDisplay();
@@ -394,6 +420,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $this->SetTimerInterval('AlarmTimeout', 0);
         $this->SetTimerInterval('RearmTimeout', 0);
+        $this->SetTimerInterval('RearmDisplay', 0);
         $this->SetTimerInterval('ScheduleTimer', 0);
 
         $this->UnregisterOldSensorMessages();
@@ -601,6 +628,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ($cancelRearm) {
             $this->SetTimerInterval('RearmTimeout', 0);
+            $this->SetTimerInterval('RearmDisplay', 0);
         }
 
         if ($scheduleRearm) {
@@ -643,6 +671,57 @@ class LCNAlarmanlage extends IPSModuleStrict
         );
     }
 
+    private function AcknowledgeAlarmInternal(string $Source): void
+    {
+        if (!$this->AcquireEngineLock()) {
+            $this->ReportLockFailure('AcknowledgeAlarm/' . $Source);
+            throw new Exception('Aktueller Alarm konnte wegen einer internen Zugriffskollision nicht sicher quittiert werden.');
+        }
+
+        $startRearmTimer = false;
+        try {
+            $session = $this->ReadSession('CurrentSession');
+            if (($session['state'] ?? self::SESSION_NONE) !== self::SESSION_ACTIVE) {
+                return;
+            }
+
+            // Die Alarmanlage selbst bleibt EIN. Nur die aktuelle Signalisierung wird
+            // beendet und die Session für neue Auslösungen verriegelt, bis alle Melder
+            // frei waren und die Wieder-Scharf-Verzögerung abgelaufen ist.
+            $session['state'] = self::SESSION_REARM_WAIT;
+            $session['signalEndedAt'] = microtime(true);
+            $session['acknowledgedAt'] = microtime(true);
+            $session['acknowledgedBy'] = $Source;
+            $session['pendingEndReason'] = 'acknowledged';
+            $this->WriteSession('CurrentSession', $session);
+            $this->WriteAttributeBoolean('ArmedReady', false);
+
+            $states = $this->ReadSensorStates();
+            if ($this->AreAllSensorsClear($states)) {
+                $delay = max(0, $this->ReadPropertyInteger('RearmDelaySeconds'));
+                $this->WriteAttributeInteger('RearmNotBefore', time() + $delay);
+                $startRearmTimer = true;
+            } else {
+                $this->WriteAttributeInteger('RearmNotBefore', 0);
+            }
+        } finally {
+            IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
+
+        $this->SetTimerInterval('AlarmTimeout', 0);
+        $this->SetTimerInterval('RearmTimeout', 0);
+        $this->SetTimerInterval('RearmDisplay', 0);
+        $this->SetValue('AlarmActive', false);
+        $this->SetValue('Acknowledge', false);
+        $this->SetAlarmControlsVisible(false);
+
+        if ($startRearmTimer) {
+            $this->ScheduleRearmFromAttribute();
+        }
+
+        $this->RefreshDisplay();
+    }
+
     /**
      * Einziger Pfad für Scharf/Unscharf. Arm, ArmedReady und CurrentSession werden
      * unter derselben Semaphore geändert wie Sensorereignisse. Damit kann eine
@@ -662,6 +741,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $stopAlarmTimer = false;
         $stopRearmTimer = false;
+        $stopRearmDisplayTimer = false;
         $hideAlarmControls = false;
         $alarmBecameInactive = false;
 
@@ -677,6 +757,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
                 $stopAlarmTimer = true;
                 $stopRearmTimer = true;
+                $stopRearmDisplayTimer = true;
                 $hideAlarmControls = true;
                 $alarmBecameInactive = true;
             } else {
@@ -697,6 +778,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
         if ($stopRearmTimer) {
             $this->SetTimerInterval('RearmTimeout', 0);
+        }
+        if ($stopRearmDisplayTimer) {
+            $this->SetTimerInterval('RearmDisplay', 0);
         }
         if ($alarmBecameInactive) {
             $this->SetValue('AlarmActive', false);
@@ -764,11 +848,16 @@ class LCNAlarmanlage extends IPSModuleStrict
         $notBefore = $this->ReadAttributeInteger('RearmNotBefore');
         if ($notBefore <= 0) {
             $this->SetTimerInterval('RearmTimeout', 0);
+            $this->SetTimerInterval('RearmDisplay', 0);
             return;
         }
 
         $milliseconds = max(1, ($notBefore - time()) * 1000);
         $this->SetTimerInterval('RearmTimeout', $milliseconds);
+        // Nur während dieser kurzen Phase einmal pro Sekunde die sichtbare Restzeit
+        // aktualisieren. Dies ist rein lokal in Symcon und erzeugt keinen LCN-Traffic.
+        $this->SetTimerInterval('RearmDisplay', 1000);
+        $this->RefreshDisplay();
     }
 
     private function CreateAlarmSession(int $VariableID): array
@@ -849,9 +938,15 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetValue('Status', 'ALARM AUSGELÖST');
         } elseif ($currentState === self::SESSION_REARM_WAIT) {
             if ($this->AreAllSensorsClear($this->ReadSensorStates())) {
-                $this->SetValue('Status', 'ALARM BEENDET – Wiederbereitschaft');
+                $notBefore = $this->ReadAttributeInteger('RearmNotBefore');
+                if ($notBefore > 0) {
+                    $remaining = max(0, $notBefore - time());
+                    $this->SetValue('Status', 'Wieder scharf in ' . $remaining . ' s');
+                } else {
+                    $this->SetValue('Status', 'Warte auf erneute Scharfschaltung');
+                }
             } else {
-                $this->SetValue('Status', 'ALARM BEENDET – warte auf freie Melder');
+                $this->SetValue('Status', 'Warte auf freie Bewegungsmelder');
             }
         } elseif (!(bool) $this->GetValue('Arm')) {
             $this->SetValue('Status', 'ALARMANLAGE AUS');

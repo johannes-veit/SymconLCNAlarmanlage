@@ -60,20 +60,24 @@ Die Session enthält mindestens:
 - Melder-ID und Meldername
 - Endzeit und Endgrund
 
-## Timeout und Wiederbereitschaft
+## Alarmende und erneute Scharfschaltung
 
-Nach Ablauf der konfigurierten Alarmdauer endet die Signalisierungsphase automatisch. Die Anlage bleibt grundsätzlich scharf, wird aber erst wieder auslösebereit, wenn:
+Nach Ablauf der konfigurierten Alarmdauer endet die Signalisierungsphase automatisch. Eine **manuelle Quittierung** beendet ebenfalls nur die aktuelle Signalisierung. In beiden Fällen bleibt `Alarmanlage EIN/AUS` auf EIN.
+
+Die aktuelle Session wechselt in `rearm_wait` und bleibt gegen neue Alarmstarts verriegelt. Erneut auslösebereit wird die Anlage erst, wenn:
 
 1. alle ausgewählten Melder frei sind und
-2. die Wiederbereitschaftszeit abgelaufen ist.
+2. die konfigurierte Wieder-Scharf-Verzögerung abgelaufen ist.
 
-Dadurch kann ein dauerhaft aktiver GUS keine endlose Folge von 5-Minuten-Alarmen erzeugen.
+Solange ein Melder aktiv ist, zeigt die Visu `Warte auf freie Bewegungsmelder`. Danach wird die verbleibende Zeit als `Wieder scharf in N s` angezeigt. Erst anschließend wird `ALARMANLAGE SCHARF` gesetzt.
 
-Eine **manuelle Quittierung** ist absichtlich anders: Sie beendet die aktuelle Session und setzt die Alarmanlage vollständig auf AUS.
+Dadurch kann ein dauerhaft aktiver GUS keine endlose Folge von Alarm-Sessions erzeugen. Nur der Hauptschalter `Alarmanlage EIN/AUS` darf die gesamte Anlage unscharf schalten.
 
 ## Timer
 
-Alle Timer sind als Einmal-Abläufe aufgebaut: Sie werden mit einem Intervall gestartet und am Beginn des Aufrufs wieder auf `0` gesetzt. Nach Neustart/`ApplyChanges()` werden benötigte Restzeiten aus persistenten Zuständen rekonstruiert.
+Alarm-, Wieder-Scharf- und Automatik-Zeitgrenzen werden als Einmal-Abläufe geführt und nach Neustart/`ApplyChanges()` aus persistenten Zuständen rekonstruiert.
+
+Zusätzlich existiert ausschließlich während eines laufenden Wieder-Scharf-Countdowns ein lokaler `RearmDisplay`-Timer mit 1 s Intervall. Er liest nur den bereits vorhandenen Symcon-Zustand und aktualisiert die Statusanzeige. Er sendet **keine** LCN-Kommandos, führt **keine** Statusabfrage aus und wird außerhalb der Countdown-Phase auf `0` gesetzt.
 
 Keine Funktion verwendet lange `sleep()`-Wartezeiten.
 

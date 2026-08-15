@@ -1,69 +1,48 @@
-# LCN Alarmanlage – Version 0.1.0
+# LCN Alarmanlage – Version 0.1.1
 
-Erste bewusst kleine Kern-Testversion für IP-Symcon 9.0.
+Kern-Testversion für IP-Symcon 9.0. Version 0.1.1 ist ein gezieltes, rollbackfähiges Update auf 0.1.0. GUIDs, Prefix, Property-Namen und bestehende Sensorzuordnungen bleiben erhalten.
 
-## Zweck dieser Version
+## Enthalten
 
-Diese Version testet ausschließlich den sicherheitskritischen Kern:
-
-- beliebig viele native LCN-GUS-Binärstatus-Booleanvariablen auswählen
+- native LCN-GUS-Binärstatus-Booleanvariablen als Alarmquellen
 - vollständig ereignisgesteuert über `VM_UPDATE`
 - kein LCN-Polling und kein `LCN_RequestStatus()` im Normalbetrieb
 - Flankenerkennung je GUS
-- kollisionsgeschützte zentrale Alarm-Session
-- gleichzeitige Meldungen mehrerer GUS
-- Bewegungsprofil mit Zeitstempeln und Reihenfolge
+- zentrale Alarm-Session mit Semaphore-Kollisionsschutz
+- gleichzeitige Meldungen beliebig vieler GUS
+- Bewegungsprofil mit Reihenfolge und Millisekunden-Zeitstempeln
 - manuell EIN/AUS
-- Zeitautomatik
-- manuelle Übersteuerung bis zur nächsten Automatik-Zeitgrenze
-- automatisches Ende der Signalisierungsphase nach 300 s (einstellbar)
-- Wiederbereitschaft erst nach freien Meldern plus Verzögerung
-- persistente aktuelle/letzte Alarm-Session
-- Wiederanlauf nach Symcon-Neustart ohne historischen Fehlalarm
+- Zeitautomatik mit manueller Übersteuerung bis zur nächsten Zeitgrenze
+- automatisches Ende der Alarmsignalisierung nach konfigurierbarer Zeit
+- Quittierung beendet ausschließlich den aktuellen Alarm; die Anlage bleibt EIN
+- nach Alarmende: erst freie Melder, danach Countdown `Wieder scharf in N s`
+- persistente aktuelle/letzte Alarm-Session und Wiederanlauf nach Symcon-Neustart
 - sicheres Abschalten bei Verlust einer konfigurierten Sensorvariable
 
-Noch **nicht** enthalten: Paniklicht, LCN-Quittierung über GT8/GT2, Push, E-Mail, Samsung-TV, blinkende Sonderdarstellung und TV-Alarm-App.
+Noch **nicht** enthalten: Paniklicht, LCN-Quittierung über GT8/GT2, Push, E-Mail, Samsung-TV und TV-Alarm-App.
 
-## Installation
+## Update von 0.1.0
 
-Der ZIP-Inhalt besitzt genau einen Hauptordner `LCN-Alarmanlage`. Dieser Ordner ist als vollständiger Repository-/GitHub-Ordner gedacht.
+Repository-Ordner vollständig durch Version 0.1.1 ersetzen und das Modul in Symcon aktualisieren. Die bestehende Instanz bleibt erhalten; die drei konfigurierten GUS sowie Alarmdauer, Wieder-Scharf-Verzögerung und Automatikwerte werden nicht umbenannt oder migriert.
 
-1. Ordner in das vorgesehene Git-Repository übernehmen.
-2. Repository über die Symcon-Modulverwaltung laden/aktualisieren.
-3. Instanz **LCN Alarmanlage** anlegen.
-4. In der Sensorliste ausschließlich die bereits praktisch getesteten nativen Boolean-Variablen der LCN-Binäreingänge auswählen.
-5. Pro Variable eine eindeutige räumliche Bezeichnung vergeben.
-6. Übernehmen.
+## Verhalten von `Alarm deaktivieren`
 
-Die Automatik ist nach der Erstinstallation absichtlich **AUS**. Für die ersten Tests die Alarmdauer bei Bedarf vorübergehend auf z. B. 20 Sekunden reduzieren.
+`Alarm deaktivieren` ist **keine Unscharfschaltung**. Ablauf:
 
-## Erster Test
+1. aktive Alarm-Session wird quittiert und gegen neue Trigger verriegelt
+2. `ALARM AUSGELÖST` wird beendet
+3. Hauptschalter `Alarmanlage EIN/AUS` bleibt EIN
+4. solange ein GUS aktiv ist: `Warte auf freie Bewegungsmelder`
+5. sobald alle GUS frei sind, startet die konfigurierte Verzögerung
+6. Status zählt lokal in Symcon: `Wieder scharf in 60 s`, `59 s`, ...
+7. danach wieder `ALARMANLAGE SCHARF`
 
-1. Zwei oder mehr GUS konfigurieren.
-2. Alarmanlage manuell EIN schalten.
-3. Wenn alle Melder frei sind, muss der Status `ALARMANLAGE SCHARF` erscheinen.
-4. GUS 1 auslösen: genau eine Alarm-Session muss starten.
-5. Während des Alarms GUS 2, GUS 3 und wieder GUS 1 auslösen.
-6. Im Bewegungsprofil müssen alle echten Zustandswechsel in Reihenfolge auftauchen.
-7. Mehrere GUS gleichzeitig auslösen.
-8. `Alarm deaktivieren` betätigen: Anlage muss sofort AUS werden.
-9. Danach automatisches Alarmende mit kurzer Testdauer prüfen.
-10. Neustart/ApplyChanges nach Testplan prüfen.
-11. Erst nach erfolgreichem Kern-Test werden externe Alarmaktionen ergänzt.
+Nur der Hauptschalter `Alarmanlage EIN/AUS` schaltet die gesamte Anlage unscharf.
 
-## Sicherheitsprinzipien
+## Traffic
 
-- Das Modul liest `MessageSink::$Data` nicht zur Alarmentscheidung aus.
-- Der aktuelle GUS-Zustand wird über die registrierte Sender-ID/Boolean-Variable gelesen.
-- Keine Objektbaum-Pfade oder Namen dienen der technischen Zuordnung.
-- Ausgewählte Variablen werden per ID referenziert und auf Boolean-Typ geprüft.
-- Sensorereignisse und Scharf-/Unscharfschaltung nutzen denselben zentralen Semaphore-Kollisionsschutz.
-- Externe/langsame Aktionen laufen später niemals innerhalb des Alarm-Semaphors.
-- Timer sind kurze Einmal-Abläufe und werden nach `ApplyChanges`/Neustart rekonstruiert.
-- Ein bereits aktiver GUS beim Initialisieren löst keinen historischen Alarm aus.
+Der neue Countdown-Timer läuft nur während der kurzen Wieder-Scharf-Phase einmal pro Sekunde und aktualisiert ausschließlich die lokale Symcon-Statusvariable. Er fragt weder LCN noch GUS ab und erzeugt daher keinen LCN-Busverkehr.
 
-Siehe zusätzlich `docs/ARCHITECTURE.md` und `docs/TESTPLAN-0.1.0.md`.
+## Test
 
-## Hinweis zur Testphase
-
-Version 0.1.0 ist bewusst eine Funktions- und Stabilitätstestversion des Kerns. Sie sollte erst nach dem vollständigen Testplan als Grundlage für die späteren Alarmaktionen verwendet werden.
+Siehe `docs/TESTPLAN-0.1.1.md`. Vor Erweiterungen um Paniklicht, Push, E-Mail oder Samsung-TV sollen insbesondere Quittierung, Countdown, Mehrfach-GUS und Neustartverhalten getestet werden.

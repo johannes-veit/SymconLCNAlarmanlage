@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.0: sicherheitskritischer Kern ohne Paniklicht, Push, E-Mail und Samsung-TV. Die Automatik ist nach der Installation absichtlich AUS."
+            "label": "Testversion 0.1.1: Alarmkern mit Session-Quittierung und sichtbarem Countdown. Noch ohne Paniklicht, Push, E-Mail und Samsung-TV."
         },
         {
             "type": "List",
@@ -38,7 +38,9 @@
                     "add": 0,
                     "edit": {
                         "type": "SelectVariable",
-                        "validVariableTypes": [0]
+                        "validVariableTypes": [
+                            0
+                        ]
                     }
                 }
             ]
@@ -53,7 +55,7 @@
         {
             "type": "NumberSpinner",
             "name": "RearmDelaySeconds",
-            "caption": "Wiederbereitschaft nach automatischem Alarmende (Sekunden)",
+            "caption": "Verzögerung bis erneut scharf nach Alarmende (Sekunden)",
             "minimum": 0,
             "maximum": 3600
         },
