@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.5
+
+- Samsung-TV optional über bestehende PowerFix-Variablen angebunden; keine direkte Abhängigkeit von einer Samsung-Modul-GUID.
+- Alarmstart: TV nur bei bestätigtem AUS über den PowerFix-Ein/Aus-Impulsbutton einschalten.
+- Alarmende/Quittierung/Unscharfschalten während aktivem Alarm: TV AUS anfordern.
+- Nach Alarmende 10-s-Nachkontrolle bis maximal 60 s; verspätetes Hochfahren nach WOL wird abgefangen.
+- Danach höchstens ein letzter OFF-Impuls plus Abschlusskontrolle; keine Endlosschleife.
+- Neue Alarm-Session überstimmt einen noch laufenden alten TV-AUS-Auftrag.
+- TV-Steuerung ist optional und nach Update standardmäßig AUS. Fehler am TV blockieren den Alarmkern nicht.
+- Push-Auswahl wird dynamisch auf echte Kachelvisualisierungen eingeschränkt und zusätzlich zur Laufzeit validiert.
+- Alarmbildschirm/Sirene auf dem TV noch nicht Bestandteil dieser Version.
+
 ## 0.1.4
 
 - stabiler Alarmkern 0.1.3 unverändert fortgeführt

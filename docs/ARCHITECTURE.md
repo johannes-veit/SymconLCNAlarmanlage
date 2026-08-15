@@ -1,4 +1,4 @@
-# Architektur 0.1.4
+# Architektur 0.1.5
 
 ## Sicherheitskern
 
@@ -38,3 +38,13 @@ Persönliche E-Mail-Adressen werden ausschließlich in Symcon-Properties der lok
 ## Update-/Rollback-Regeln
 
 GUIDs, Prefix und bestehende Property-/Ident-Namen nicht ändern. Neue Properties haben neutrale Defaults. Keine Hardwareaktionen oder Benachrichtigungen allein durch ein Update.
+
+
+## Samsung-TV 0.1.5
+
+- Lose Kopplung über zwei generische Symcon-Variablen: PowerFix-Status (Boolean) und PowerFix-Ein/Aus-Impulsbutton (Integer mit Aktion).
+- Keine direkte Samsung-Modul-GUID und kein Zugriff auf interne Parent-/WebSocket-Objekte.
+- `TVDesiredState` ist persistent: `ON` nur für eine aktive Alarm-Session, `OFF` als begrenzter Nachlauf nach Alarmende, sonst `NONE`.
+- `TVControl` läuft nur bei tatsächlichem Start-/Stop-Nachlauf. Die 10-s-Prüfung liest ausschließlich die lokale Statusvariable.
+- EIN-Befehle prüfen unmittelbar davor die aktive Session-ID; AUS-Befehle werden unterdrückt, sobald wieder eine aktive Alarm-Session existiert.
+- Nach maximal 60 s Abschaltüberwachung: ein letzter OFF-Impuls und genau eine Abschlusskontrolle; danach nur Logeintrag, keine Endlosschleife.

@@ -12,6 +12,14 @@ class LCNAlarmanlage extends IPSModuleStrict
     private const OVERRIDE_ON = 1;
     private const OVERRIDE_OFF = 2;
 
+    private const TV_DESIRED_NONE = -1;
+    private const TV_DESIRED_OFF = 0;
+    private const TV_DESIRED_ON = 1;
+    private const TV_CONTROL_INTERVAL_MS = 10000;
+    private const TV_START_MONITOR_SECONDS = 60;
+    private const TV_SHUTDOWN_MONITOR_SECONDS = 60;
+    private const TV_MIN_COMMAND_INTERVAL_SECONDS = 5;
+
     private const MAX_EVENTS_PER_SESSION = 1000;
 
     public function Create(): void
@@ -30,6 +38,12 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterPropertyBoolean('EmailEnabled', false);
         $this->RegisterPropertyInteger('SMTPInstanceID', 0);
         $this->RegisterPropertyString('EmailRecipients', '');
+        // Samsung-TV wird ausschließlich über die bereits getesteten PowerFix-
+        // Aktions-/Statusvariablen angebunden. Dadurch bleibt dieses Modul von der
+        // konkreten Samsung-Tizen-Modulversion entkoppelt.
+        $this->RegisterPropertyBoolean('TVEnabled', false);
+        $this->RegisterPropertyInteger('TVStatusVariableID', 0);
+        $this->RegisterPropertyInteger('TVPowerButtonVariableID', 0);
 
         $this->RegisterAttributeInteger('ManualOverride', self::OVERRIDE_NONE);
         $this->RegisterAttributeBoolean('ArmedReady', false);
@@ -40,6 +54,15 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterAttributeString('RegisteredSensorIDs', '[]');
         $this->RegisterAttributeString('RegisteredAcknowledgeIDs', '[]');
         $this->RegisterAttributeInteger('RegisteredPanicVariableID', 0);
+        $this->RegisterAttributeInteger('RegisteredTVStatusVariableID', 0);
+        $this->RegisterAttributeInteger('RegisteredTVPowerButtonVariableID', 0);
+        // -1 = keine Alarmanforderung, 0 = TV AUS erzwingen/überwachen, 1 = TV EIN
+        // solange die zugehörige Alarm-Session aktiv ist.
+        $this->RegisterAttributeInteger('TVDesiredState', -1);
+        $this->RegisterAttributeInteger('TVControlDeadline', 0);
+        $this->RegisterAttributeString('TVControlSessionID', '');
+        $this->RegisterAttributeInteger('TVLastPowerCommandAt', 0);
+        $this->RegisterAttributeBoolean('TVFinalCheckPending', false);
 
         $created = $this->RegisterVariableBoolean(
             'Arm',
@@ -173,6 +196,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterTimer('ScheduleTimer', 0, 'LCNALARM_ScheduleTimer($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PanicQueue', 0, 'LCNALARM_PanicQueue($_IPS[\'TARGET\']);');
         $this->RegisterTimer('NotificationQueue', 0, 'LCNALARM_NotificationQueue($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('TVControl', 0, 'LCNALARM_TVControl($_IPS[\'TARGET\']);');
 
         $this->RegisterMessage(0, IPS_KERNELSTARTED);
     }
@@ -188,6 +212,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('ScheduleTimer', 0);
         $this->SetTimerInterval('PanicQueue', 0);
         $this->SetTimerInterval('NotificationQueue', 0);
+        $this->SetTimerInterval('TVControl', 0);
 
         if (IPS_GetKernelRunlevel() !== KR_READY) {
             $this->SetValue('Status', 'INITIALISIERUNG');
@@ -195,6 +220,45 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $this->InitializeRuntime();
+    }
+
+    /**
+     * Schränkt die Push-Auswahl auf echte Kachel-Visualisierungen ein. Die Liste
+     * wird dynamisch aus den installierten Visualisierungsmodulen aufgebaut, damit
+     * keine fest codierte GUID einer Symcon-Version notwendig ist.
+     */
+    public function GetConfigurationForm(): string
+    {
+        $path = __DIR__ . '/form.json';
+        $json = @file_get_contents($path);
+        $form = is_string($json) ? json_decode($json, true) : null;
+        if (!is_array($form)) {
+            return '{"elements":[{"type":"Label","label":"Konfigurationsformular konnte nicht geladen werden."}]}';
+        }
+
+        $validModules = [];
+        try {
+            foreach (IPS_GetModuleListByType(6) as $moduleID) {
+                $module = IPS_GetModule((string) $moduleID);
+                if (strtoupper((string) ($module['Prefix'] ?? '')) === 'VISU') {
+                    $validModules[] = (string) $moduleID;
+                }
+            }
+        } catch (Throwable $e) {
+            $this->SendDebug('ConfigurationForm', 'Kachelvisualisierungen konnten nicht gefiltert werden: ' . $e->getMessage(), 0);
+        }
+
+        if ($validModules !== []) {
+            foreach ($form['elements'] as &$element) {
+                if (is_array($element) && ($element['name'] ?? '') === 'PushVisualizationID') {
+                    $element['validModules'] = array_values(array_unique($validModules));
+                    break;
+                }
+            }
+            unset($element);
+        }
+
+        return json_encode($form, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
     }
 
     public function MessageSink(int $TimeStamp, int $SenderID, int $Message, array $Data): void
@@ -209,6 +273,8 @@ class LCNAlarmanlage extends IPSModuleStrict
                 $this->HandleSensorUnavailable($SenderID);
             } elseif ($this->IsAcknowledgeVariable($SenderID) || $SenderID === $this->PanicGroupVariableID()) {
                 $this->HandleAuxiliaryUnavailable($SenderID);
+            } elseif ($this->IsTVReference($SenderID)) {
+                $this->HandleTVUnavailable($SenderID);
             }
             return;
         }
@@ -224,6 +290,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
         if ($this->IsAcknowledgeVariable($SenderID)) {
             $this->ProcessAcknowledgeLightUpdate($SenderID);
+        }
+        if ($SenderID === $this->TVStatusVariableID()) {
+            $this->ProcessTVStatusUpdate();
         }
     }
 
@@ -335,6 +404,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ($endedSessionID !== '') {
             $this->SetPanicForSession($endedSessionID, false, 'automatic-timeout');
+            $this->BeginTVShutdown($endedSessionID, 'automatic-timeout');
         }
 
         if ($startRearmTimer) {
@@ -581,6 +651,140 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
     }
 
+    /**
+     * Begrenzter, rein lokaler TV-Zustandsautomat. Er liest nur die bereits vom
+     * PowerFix gepflegte Statusvariable. Dadurch erzeugen die 10-s-Kontrollen
+     * selbst keinen zusätzlichen Netzwerkverkehr zum TV.
+     */
+    public function TVControl(): void
+    {
+        $this->SetTimerInterval('TVControl', 0);
+
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false)) {
+            $this->ClearTVControlState();
+            return;
+        }
+
+        $statusID = (int) ($config['statusID'] ?? 0);
+        if ($statusID <= 0 || !IPS_VariableExists($statusID)) {
+            $this->HandleTVUnavailable($statusID);
+            return;
+        }
+
+        if (!$this->AcquireTVLock()) {
+            $this->ReportTVLockFailure('TVControl');
+            $this->SetTimerInterval('TVControl', 1000);
+            return;
+        }
+
+        $powerTarget = null;
+        $powerReason = '';
+        $nextMs = 0;
+        $overrideWithActiveSession = '';
+        $logMessage = '';
+
+        try {
+            $desired = $this->ReadAttributeInteger('TVDesiredState');
+            if ($desired !== self::TV_DESIRED_ON && $desired !== self::TV_DESIRED_OFF) {
+                return;
+            }
+
+            $sessionID = $this->ReadAttributeString('TVControlSessionID');
+            $deadline = $this->ReadAttributeInteger('TVControlDeadline');
+            $now = time();
+            $tvOn = (bool) GetValue($statusID);
+
+            if ($desired === self::TV_DESIRED_ON) {
+                // Ein alter EIN-Auftrag darf nach Quittierung niemals nachlaufen.
+                if (!$this->IsActiveSession($sessionID)) {
+                    $this->ClearTVControlStateUnlocked();
+                    return;
+                }
+
+                if ($tvOn) {
+                    // Ziel erreicht. Desired=ON bleibt bestehen, damit eine spätere
+                    // echte AUS-Meldung derselben Alarm-Session erneut WOL auslösen kann.
+                    $this->WriteAttributeInteger('TVControlDeadline', 0);
+                    return;
+                }
+
+                if ($deadline <= 0) {
+                    $deadline = $now + self::TV_START_MONITOR_SECONDS;
+                    $this->WriteAttributeInteger('TVControlDeadline', $deadline);
+                }
+
+                if ($now >= $deadline) {
+                    $logMessage = 'Samsung-TV konnte innerhalb von ' . self::TV_START_MONITOR_SECONDS . ' s nicht als EIN bestätigt werden.';
+                    $this->ClearTVControlStateUnlocked();
+                } else {
+                    $powerTarget = true;
+                    $powerReason = 'alarm-tv-on/' . $sessionID;
+                    $nextMs = self::TV_CONTROL_INTERVAL_MS;
+                }
+            } else {
+                $activeSessionID = $this->GetActiveSessionID();
+                if ($activeSessionID === '__LOCK_UNCERTAIN__') {
+                    // Bei unsicherem Alarmzustand niemals AUS senden oder einen alten
+                    // Auftrag verwerfen. Kurz spaeter erneut pruefen.
+                    $nextMs = 1000;
+                } elseif ($activeSessionID !== '') {
+                    // Neue Alarm-Session gewinnt deterministisch gegen einen alten
+                    // Abschaltworker. Nach dem Lock wird die EIN-Anforderung aufgebaut.
+                    $overrideWithActiveSession = $activeSessionID;
+                    $this->ClearTVControlStateUnlocked();
+                } else {
+                    if ($deadline <= 0) {
+                        $deadline = $now + self::TV_SHUTDOWN_MONITOR_SECONDS;
+                        $this->WriteAttributeInteger('TVControlDeadline', $deadline);
+                    }
+
+                    if ($now >= $deadline) {
+                        if ($tvOn && !$this->ReadAttributeBoolean('TVFinalCheckPending')) {
+                            $powerTarget = false;
+                            $powerReason = 'alarm-tv-off-final/' . $sessionID;
+                            $this->WriteAttributeBoolean('TVFinalCheckPending', true);
+                            $this->WriteAttributeInteger('TVControlDeadline', $now + 10);
+                            $nextMs = 10000;
+                        } else {
+                            if ($tvOn) {
+                                $logMessage = 'Samsung-TV ist nach Alarmende weiterhin EIN; weitere automatische Power-Befehle werden nicht gesendet.';
+                            }
+                            $this->ClearTVControlStateUnlocked();
+                        }
+                    } else {
+                        if ($tvOn) {
+                            $powerTarget = false;
+                            $powerReason = 'alarm-tv-off/' . $sessionID;
+                        }
+                        // Auch bei bereits AUS gemeldetem TV bis zur Deadline weiter
+                        // kontrollieren: ein träger WOL-Start kann verspätet hochfahren.
+                        $nextMs = max(1000, min(self::TV_CONTROL_INTERVAL_MS, ($deadline - $now) * 1000));
+                    }
+                }
+            }
+        } finally {
+            IPS_SemaphoreLeave($this->TVSemaphoreName());
+        }
+
+        if ($logMessage !== '') {
+            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, $logMessage);
+            $this->SendDebug('SamsungTV', $logMessage, 0);
+        }
+
+        if ($overrideWithActiveSession !== '') {
+            $this->StartTVForSession($overrideWithActiveSession, 'new-alarm-overrides-shutdown');
+            return;
+        }
+
+        if (is_bool($powerTarget)) {
+            $this->SendTVPowerImpulse($powerTarget, $powerReason);
+        }
+        if ($nextMs > 0 && $this->ReadAttributeInteger('TVDesiredState') !== self::TV_DESIRED_NONE) {
+            $this->SetTimerInterval('TVControl', $nextMs);
+        }
+    }
+
     /** Einmal-Timer für die nächste EIN- oder AUS-Zeitgrenze. */
     public function ScheduleTimer(): void
     {
@@ -610,25 +814,36 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('ScheduleTimer', 0);
         $this->SetTimerInterval('PanicQueue', 0);
         $this->SetTimerInterval('NotificationQueue', 0);
+        $this->SetTimerInterval('TVControl', 0);
 
         $this->UnregisterOldSensorMessages();
         $this->UnregisterOldAcknowledgeMessages();
         $this->UnregisterOldPanicReference();
+        $this->UnregisterOldTVReferences();
 
         [$sensorMap, $errors] = $this->BuildSensorMap();
         [$acknowledgeMap, $acknowledgeErrors] = $this->BuildAcknowledgeMap($sensorMap);
         [$panicVariableID, $panicErrors] = $this->BuildPanicConfig();
         [$notificationConfig, $notificationWarnings] = $this->BuildNotificationConfig();
+        [$tvConfig, $tvWarnings] = $this->BuildTVConfig();
         $errors = array_merge($errors, $acknowledgeErrors, $panicErrors);
 
         $this->SetBuffer('SensorMap', $this->Encode($sensorMap));
         $this->SetBuffer('AcknowledgeMap', $this->Encode($acknowledgeMap));
         $this->SetBuffer('PanicGroupVariableID', (string) $panicVariableID);
         $this->SetBuffer('NotificationConfig', $this->Encode($notificationConfig));
+        $this->SetBuffer('TVConfig', $this->Encode($tvConfig));
+        if (!(bool) ($tvConfig['enabled'] ?? false)) {
+            $this->ClearTVControlState();
+        }
 
         foreach ($notificationWarnings as $warning) {
             IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Benachrichtigung: ' . $warning);
             $this->SendDebug('NotificationConfig', $warning, 0);
+        }
+        foreach ($tvWarnings as $warning) {
+            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Samsung-TV: ' . $warning);
+            $this->SendDebug('TVConfig', $warning, 0);
         }
 
         if ($errors !== []) {
@@ -636,6 +851,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetTimerInterval('ScheduleTimer', 0);
             $this->SetTimerInterval('PanicQueue', 0);
             $this->SetTimerInterval('NotificationQueue', 0);
+            $this->SetTimerInterval('TVControl', 0);
             $this->SetSummary('Konfigurationsfehler');
             try {
                 $this->SetArmedInternal(false, 'configuration-error');
@@ -654,6 +870,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetTimerInterval('ScheduleTimer', 0);
             $this->SetTimerInterval('PanicQueue', 0);
             $this->SetTimerInterval('NotificationQueue', 0);
+            $this->SetTimerInterval('TVControl', 0);
             $this->SetSummary('Keine GUS');
             try {
                 $this->SetArmedInternal(false, 'no-sensors');
@@ -694,6 +911,22 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->WriteAttributeInteger('RegisteredPanicVariableID', $panicVariableID);
         }
 
+        if ((bool) ($tvConfig['enabled'] ?? false)) {
+            $tvStatusID = (int) ($tvConfig['statusID'] ?? 0);
+            $tvPowerID = (int) ($tvConfig['powerButtonID'] ?? 0);
+            if ($tvStatusID > 0) {
+                $this->RegisterMessage($tvStatusID, VM_UPDATE);
+                $this->RegisterMessage($tvStatusID, OM_UNREGISTER);
+                $this->RegisterReference($tvStatusID);
+                $this->WriteAttributeInteger('RegisteredTVStatusVariableID', $tvStatusID);
+            }
+            if ($tvPowerID > 0) {
+                $this->RegisterMessage($tvPowerID, OM_UNREGISTER);
+                $this->RegisterReference($tvPowerID);
+                $this->WriteAttributeInteger('RegisteredTVPowerButtonVariableID', $tvPowerID);
+            }
+        }
+
         $summary = count($sensorMap) . ' GUS';
         if ($acknowledgeMap !== []) {
             $summary .= ' · Panik ' . count($acknowledgeMap) . ' Lichter';
@@ -710,6 +943,12 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
         if ($notificationWarnings !== []) {
             $summary .= ' · Hinweis Benachr.';
+        }
+        if ((bool) ($tvConfig['enabled'] ?? false)) {
+            $summary .= ' · Samsung-TV';
+        }
+        if ($tvWarnings !== []) {
+            $summary .= ' · Hinweis TV';
         }
         $this->SetSummary($summary);
 
@@ -765,7 +1004,18 @@ class LCNAlarmanlage extends IPSModuleStrict
             $sessionID = (string) ($session['id'] ?? '');
             if ($sessionID !== '') {
                 $this->SetPanicForSession($sessionID, true, 'restart');
+                $this->StartTVForSession($sessionID, 'restart');
             }
+        } elseif ($sessionState === self::SESSION_REARM_WAIT) {
+            $sessionID = (string) ($session['id'] ?? '');
+            if ($sessionID !== '') {
+                // Nach einem Neustart waehrend der Nachlaufphase wird die begrenzte
+                // AUS-Ueberwachung neu gestartet. Ein normal eingeschalteter TV ohne
+                // zugehoerige Alarm-Session wird niemals angetastet.
+                $this->BeginTVShutdown($sessionID, 'restart-rearm');
+            }
+        } else {
+            $this->ClearTVControlState();
         }
 
         // Baseline und persistenter Zustand sind jetzt konsistent. Ab hier dürfen
@@ -894,6 +1144,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             // gleichzeitige Quittierung kein dauerhaftes Licht-EIN hinterlässt.
             if ($alarmSessionID !== '') {
                 $this->SetPanicForSession($alarmSessionID, true, 'alarm-start');
+                $this->StartTVForSession($alarmSessionID, 'alarm-start');
                 $this->QueueAlarmNotifications($alarmSessionID);
             }
             $this->SendDebug('ALARM', 'Neue Alarm-Session durch Variable #' . $VariableID, 0);
@@ -958,6 +1209,202 @@ class LCNAlarmanlage extends IPSModuleStrict
         if ($shouldAcknowledge) {
             $this->AcknowledgeAlarmInternal($source);
         }
+    }
+
+    private function ProcessTVStatusUpdate(): void
+    {
+        if ($this->GetBuffer('RuntimeReady') !== '1') {
+            return;
+        }
+
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false)) {
+            return;
+        }
+
+        $desired = $this->ReadAttributeInteger('TVDesiredState');
+        if ($desired !== self::TV_DESIRED_ON && $desired !== self::TV_DESIRED_OFF) {
+            return;
+        }
+
+        // Statuswechsel werden ereignisgesteuert sofort verarbeitet. Der Worker
+        // selbst liest nur die lokale Statusvariable und ist zusätzlich begrenzt.
+        $this->TVControl();
+    }
+
+    private function StartTVForSession(string $SessionID, string $Reason): void
+    {
+        if ($SessionID === '' || !$this->IsActiveSession($SessionID)) {
+            return;
+        }
+
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false)) {
+            return;
+        }
+
+        $statusID = (int) ($config['statusID'] ?? 0);
+        if ($statusID <= 0 || !IPS_VariableExists($statusID)) {
+            $this->HandleTVUnavailable($statusID);
+            return;
+        }
+
+        if (!$this->AcquireTVLock()) {
+            $this->ReportTVLockFailure('StartTVForSession');
+            return;
+        }
+        try {
+            // Recheck unter dem TV-Lock. Engine-Locks werden nirgendwo gehalten,
+            // während auf den TV-Lock gewartet wird; dadurch keine Lock-Inversion.
+            if (!$this->IsActiveSession($SessionID)) {
+                return;
+            }
+            $this->WriteAttributeInteger('TVDesiredState', self::TV_DESIRED_ON);
+            $this->WriteAttributeString('TVControlSessionID', $SessionID);
+            $this->WriteAttributeInteger('TVControlDeadline', time() + self::TV_START_MONITOR_SECONDS);
+            $this->WriteAttributeBoolean('TVFinalCheckPending', false);
+        } finally {
+            IPS_SemaphoreLeave($this->TVSemaphoreName());
+        }
+
+        $this->SetTimerInterval('TVControl', 0);
+        if (!(bool) GetValue($statusID)) {
+            $this->SendTVPowerImpulse(true, $Reason . '/' . $SessionID);
+            $this->SetTimerInterval('TVControl', self::TV_CONTROL_INTERVAL_MS);
+        }
+    }
+
+    private function BeginTVShutdown(string $SessionID, string $Reason): void
+    {
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false)) {
+            return;
+        }
+
+        $statusID = (int) ($config['statusID'] ?? 0);
+        if ($statusID <= 0 || !IPS_VariableExists($statusID)) {
+            $this->HandleTVUnavailable($statusID);
+            return;
+        }
+
+        if (!$this->AcquireTVLock()) {
+            $this->ReportTVLockFailure('BeginTVShutdown');
+            return;
+        }
+        try {
+            // Eine neue aktive Session hat Vorrang. Das verhindert einen alten OFF-
+            // Befehl unmittelbar nach einer neuen Auslösung.
+            if ($this->GetActiveSessionID() !== '') {
+                return;
+            }
+            $this->WriteAttributeInteger('TVDesiredState', self::TV_DESIRED_OFF);
+            $this->WriteAttributeString('TVControlSessionID', $SessionID);
+            $this->WriteAttributeInteger('TVControlDeadline', time() + self::TV_SHUTDOWN_MONITOR_SECONDS);
+            $this->WriteAttributeBoolean('TVFinalCheckPending', false);
+        } finally {
+            IPS_SemaphoreLeave($this->TVSemaphoreName());
+        }
+
+        $this->SetTimerInterval('TVControl', 0);
+        if ((bool) GetValue($statusID)) {
+            $this->SendTVPowerImpulse(false, $Reason . '/' . $SessionID);
+        }
+
+        // Unabhängig vom aktuellen Status nach 10 s erneut prüfen. So wird auch ein
+        // erst nach der Quittierung fertig startender TV zuverlässig wieder erkannt.
+        $this->SetTimerInterval('TVControl', self::TV_CONTROL_INTERVAL_MS);
+    }
+
+    private function SendTVPowerImpulse(bool $TargetOn, string $Reason): void
+    {
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false)) {
+            return;
+        }
+
+        $statusID = (int) ($config['statusID'] ?? 0);
+        $buttonID = (int) ($config['powerButtonID'] ?? 0);
+        if ($statusID <= 0 || $buttonID <= 0 || !IPS_VariableExists($statusID) || !IPS_VariableExists($buttonID)) {
+            $this->HandleTVUnavailable(($statusID <= 0 || !IPS_VariableExists($statusID)) ? $statusID : $buttonID);
+            return;
+        }
+
+        $current = (bool) GetValue($statusID);
+        if ($current === $TargetOn) {
+            return;
+        }
+
+        if (!$this->AcquireTVLock()) {
+            $this->ReportTVLockFailure('SendTVPowerImpulse');
+            return;
+        }
+        try {
+            $expected = $TargetOn ? self::TV_DESIRED_ON : self::TV_DESIRED_OFF;
+            if ($this->ReadAttributeInteger('TVDesiredState') !== $expected) {
+                return;
+            }
+
+            $now = time();
+            $last = $this->ReadAttributeInteger('TVLastPowerCommandAt');
+            if ($last > 0 && ($now - $last) < self::TV_MIN_COMMAND_INTERVAL_SECONDS) {
+                return;
+            }
+            $this->WriteAttributeInteger('TVLastPowerCommandAt', $now);
+        } finally {
+            IPS_SemaphoreLeave($this->TVSemaphoreName());
+        }
+
+        // Direkt vor dem externen Aktionsaufruf nochmals die Alarmrichtung prüfen.
+        if ($TargetOn) {
+            $sessionID = $this->ReadAttributeString('TVControlSessionID');
+            if ($this->ReadAttributeInteger('TVDesiredState') !== self::TV_DESIRED_ON || !$this->IsActiveSession($sessionID)) {
+                return;
+            }
+        } else {
+            if ($this->ReadAttributeInteger('TVDesiredState') !== self::TV_DESIRED_OFF || $this->GetActiveSessionID() !== '') {
+                return;
+            }
+        }
+
+        try {
+            if (!HasAction($buttonID)) {
+                throw new Exception('PowerFix-Ein/Aus-Variable besitzt keine Aktion');
+            }
+            $ok = RequestActionEx($buttonID, 1, 'LCN Alarmanlage');
+            if (!$ok) {
+                throw new Exception('RequestActionEx meldete FALSE');
+            }
+            $this->SendDebug('SamsungTV', ($TargetOn ? 'EIN' : 'AUS') . ' angefordert (' . $Reason . ')', 0);
+        } catch (Throwable $e) {
+            IPS_LogMessage(
+                'LCN Alarmanlage #' . $this->InstanceID,
+                'Samsung-TV ' . ($TargetOn ? 'EIN' : 'AUS') . ' fehlgeschlagen (' . $Reason . '): ' . $e->getMessage()
+            );
+            $this->SendDebug('SamsungTV', $e->getMessage(), 0);
+        }
+    }
+
+    private function ClearTVControlState(): void
+    {
+        if (!$this->AcquireTVLock()) {
+            $this->ReportTVLockFailure('ClearTVControlState');
+            $this->SetTimerInterval('TVControl', 0);
+            return;
+        }
+        try {
+            $this->ClearTVControlStateUnlocked();
+        } finally {
+            IPS_SemaphoreLeave($this->TVSemaphoreName());
+        }
+    }
+
+    private function ClearTVControlStateUnlocked(): void
+    {
+        $this->SetTimerInterval('TVControl', 0);
+        $this->WriteAttributeInteger('TVDesiredState', self::TV_DESIRED_NONE);
+        $this->WriteAttributeInteger('TVControlDeadline', 0);
+        $this->WriteAttributeString('TVControlSessionID', '');
+        $this->WriteAttributeBoolean('TVFinalCheckPending', false);
     }
 
     private function SetPanicForSession(string $SessionID, bool $On, string $Reason): void
@@ -1028,6 +1475,25 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
     }
 
+    private function GetActiveSessionID(): string
+    {
+        if (!$this->AcquireEngineLock()) {
+            $this->ReportLockFailure('GetActiveSessionID');
+            // Bei Unsicherheit so behandeln, als gäbe es eine aktive Session.
+            return '__LOCK_UNCERTAIN__';
+        }
+
+        try {
+            $session = $this->ReadSession('CurrentSession');
+            if (($session['state'] ?? self::SESSION_NONE) !== self::SESSION_ACTIVE) {
+                return '';
+            }
+            return (string) ($session['id'] ?? '');
+        } finally {
+            IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
+    }
+
     private function IsActiveSession(string $SessionID): bool
     {
         if ($SessionID === '') {
@@ -1087,6 +1553,23 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SendDebug('AuxiliaryUnavailable', 'Variable #' . $VariableID, 0);
     }
 
+    private function HandleTVUnavailable(int $ObjectID): void
+    {
+        $this->SetTimerInterval('TVControl', 0);
+        $this->SetBuffer('TVConfig', $this->Encode([
+            'enabled' => false,
+            'statusID' => 0,
+            'powerButtonID' => 0
+        ]));
+        $this->ClearTVControlState();
+
+        IPS_LogMessage(
+            'LCN Alarmanlage #' . $this->InstanceID,
+            'Optionale Samsung-TV-Anbindung nicht mehr verfügbar: Objekt #' . $ObjectID
+        );
+        $this->SendDebug('SamsungTV', 'Objekt nicht verfügbar #' . $ObjectID, 0);
+    }
+
     private function AcknowledgeAlarmInternal(string $Source): void
     {
         if (!$this->AcquireEngineLock()) {
@@ -1136,6 +1619,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ($endedSessionID !== '') {
             $this->SetPanicForSession($endedSessionID, false, 'acknowledged/' . $Source);
+            $this->BeginTVShutdown($endedSessionID, 'acknowledged/' . $Source);
         }
 
         if ($startRearmTimer) {
@@ -1218,6 +1702,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
         if ($panicOffSessionID !== '') {
             $this->SetPanicForSession($panicOffSessionID, false, 'anlage-aus/' . $Reason);
+            $this->BeginTVShutdown($panicOffSessionID, 'anlage-aus/' . $Reason);
         }
 
         $this->RefreshDisplay();
@@ -1452,8 +1937,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $pushVisualizationID = $this->ReadPropertyInteger('PushVisualizationID');
         $pushEnabled = false;
         if ($pushRequested) {
-            if ($pushVisualizationID <= 0 || !IPS_InstanceExists($pushVisualizationID)) {
-                $warnings[] = 'Push aktiviert, aber keine gültige Kachelvisualisierung ausgewählt';
+            if ($pushVisualizationID <= 0 || !$this->IsTileVisualizationInstance($pushVisualizationID)) {
+                $warnings[] = 'Push aktiviert, aber keine echte Kachelvisualisierung ausgewählt';
             } else {
                 $pushEnabled = true;
             }
@@ -1480,6 +1965,84 @@ class LCNAlarmanlage extends IPSModuleStrict
             'smtpID' => $smtpID,
             'emailRecipients' => $recipients
         ], $warnings];
+    }
+
+    private function BuildTVConfig(): array
+    {
+        $warnings = [];
+        if (!$this->ReadPropertyBoolean('TVEnabled')) {
+            return [[
+                'enabled' => false,
+                'statusID' => 0,
+                'powerButtonID' => 0
+            ], []];
+        }
+
+        $statusID = $this->ReadPropertyInteger('TVStatusVariableID');
+        $powerButtonID = $this->ReadPropertyInteger('TVPowerButtonVariableID');
+        $valid = true;
+
+        if ($statusID <= 0 || !IPS_VariableExists($statusID)) {
+            $warnings[] = 'TV aktiviert, aber keine gültige Boolean-Statusvariable ausgewählt';
+            $valid = false;
+        } else {
+            $variable = IPS_GetVariable($statusID);
+            if ((int) ($variable['VariableType'] ?? -1) !== VARIABLETYPE_BOOLEAN) {
+                $warnings[] = 'TV-Statusvariable muss Boolean sein';
+                $valid = false;
+            }
+        }
+
+        if ($powerButtonID <= 0 || !IPS_VariableExists($powerButtonID)) {
+            $warnings[] = 'TV aktiviert, aber kein gültiger PowerFix-Ein/Aus-Impulsbutton ausgewählt';
+            $valid = false;
+        } else {
+            $variable = IPS_GetVariable($powerButtonID);
+            if ((int) ($variable['VariableType'] ?? -1) !== VARIABLETYPE_INTEGER) {
+                $warnings[] = 'PowerFix-Ein/Aus-Impulsbutton muss Integer sein';
+                $valid = false;
+            } elseif (!HasAction($powerButtonID)) {
+                $warnings[] = 'PowerFix-Ein/Aus-Impulsbutton besitzt keine nutzbare Symcon-Aktion';
+                $valid = false;
+            }
+        }
+
+        if ($statusID > 0 && $statusID === $powerButtonID) {
+            $warnings[] = 'TV-Status und Ein/Aus-Impulsbutton dürfen nicht dieselbe Variable sein';
+            $valid = false;
+        }
+
+        return [[
+            'enabled' => $valid,
+            'statusID' => $valid ? $statusID : 0,
+            'powerButtonID' => $valid ? $powerButtonID : 0
+        ], $warnings];
+    }
+
+    private function ReadTVConfig(): array
+    {
+        $decoded = json_decode($this->GetBuffer('TVConfig'), true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function IsTileVisualizationInstance(int $InstanceID): bool
+    {
+        if ($InstanceID <= 0 || !IPS_InstanceExists($InstanceID)) {
+            return false;
+        }
+
+        try {
+            $instance = IPS_GetInstance($InstanceID);
+            $moduleID = (string) ($instance['ModuleInfo']['ModuleID'] ?? '');
+            if ($moduleID === '') {
+                return false;
+            }
+            $module = IPS_GetModule($moduleID);
+            return (int) ($module['ModuleType'] ?? -1) === 6
+                && strtoupper((string) ($module['Prefix'] ?? '')) === 'VISU';
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     private function ParseEmailRecipients(string $Raw): array
@@ -1770,6 +2333,24 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->WriteAttributeInteger('RegisteredPanicVariableID', 0);
     }
 
+    private function UnregisterOldTVReferences(): void
+    {
+        $statusID = $this->ReadAttributeInteger('RegisteredTVStatusVariableID');
+        if ($statusID > 0) {
+            $this->UnregisterMessage($statusID, VM_UPDATE);
+            $this->UnregisterMessage($statusID, OM_UNREGISTER);
+            $this->UnregisterReference($statusID);
+        }
+        $this->WriteAttributeInteger('RegisteredTVStatusVariableID', 0);
+
+        $powerID = $this->ReadAttributeInteger('RegisteredTVPowerButtonVariableID');
+        if ($powerID > 0) {
+            $this->UnregisterMessage($powerID, OM_UNREGISTER);
+            $this->UnregisterReference($powerID);
+        }
+        $this->WriteAttributeInteger('RegisteredTVPowerButtonVariableID', 0);
+    }
+
     private function ReadSensorMap(): array
     {
         $decoded = json_decode($this->GetBuffer('SensorMap'), true);
@@ -1791,6 +2372,26 @@ class LCNAlarmanlage extends IPSModuleStrict
     private function PanicGroupVariableID(): int
     {
         return (int) $this->GetBuffer('PanicGroupVariableID');
+    }
+
+    private function TVStatusVariableID(): int
+    {
+        $config = $this->ReadTVConfig();
+        return (bool) ($config['enabled'] ?? false) ? (int) ($config['statusID'] ?? 0) : 0;
+    }
+
+    private function TVPowerButtonVariableID(): int
+    {
+        $config = $this->ReadTVConfig();
+        return (bool) ($config['enabled'] ?? false) ? (int) ($config['powerButtonID'] ?? 0) : 0;
+    }
+
+    private function IsTVReference(int $ObjectID): bool
+    {
+        if ($ObjectID <= 0) {
+            return false;
+        }
+        return $ObjectID === $this->TVStatusVariableID() || $ObjectID === $this->TVPowerButtonVariableID();
     }
 
     private function IsSensorVariable(int $VariableID): bool
@@ -1875,6 +2476,27 @@ class LCNAlarmanlage extends IPSModuleStrict
     private function EngineSemaphoreName(): string
     {
         return 'LCNAlarmanlage_' . $this->InstanceID;
+    }
+
+    private function AcquireTVLock(): bool
+    {
+        if (IPS_SemaphoreEnter($this->TVSemaphoreName(), 1000)) {
+            return true;
+        }
+        return IPS_SemaphoreEnter($this->TVSemaphoreName(), 2000);
+    }
+
+    private function TVSemaphoreName(): string
+    {
+        return 'LCNAlarmanlageTV_' . $this->InstanceID;
+    }
+
+    private function ReportTVLockFailure(string $Context): void
+    {
+        $message = 'TV-Semaphore konnte nicht übernommen werden: ' . $Context;
+        IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, $message);
+        $this->SendDebug('TVLockFailure', $message, 0);
+        // TV ist optional: Ein Kollisionsfehler darf den Alarmkern nicht auf STÖRUNG setzen.
     }
 
     private function ReportLockFailure(string $Context): void
