@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.5: stabiler Alarmkern aus 0.1.4 plus Samsung-TV EIN/AUS über die bereits getestete PowerFix-Fernbedienung. Die spezielle Alarmanzeige/-sirene auf dem TV ist noch nicht enthalten."
+            "label": "Testversion 0.1.6: stabiler Alarmkern aus 0.1.4 plus korrigierte Samsung-TV EIN/AUS-Steuerung mit begrenzten WOL-Wiederholungen. Die spezielle Alarmanzeige/-sirene auf dem TV ist noch nicht enthalten."
         },
         {
             "type": "List",

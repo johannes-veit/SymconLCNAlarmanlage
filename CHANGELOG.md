@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.6
+
+- Samsung-TV-Start robuster: erster Start weiterhin über PowerFix, danach bei aktivem Alarm maximal zwei zusätzliche native Wake-on-LAN-Versuche nach 5 s und 10 s.
+- Keine weiteren Wake-Versuche nach Quittierung oder automatischem Alarmende.
+- TV wird nur dann nach Alarmende ausgeschaltet, wenn er vor dem Alarm AUS war bzw. von der Alarmanlage übernommen wurde.
+- Bereits vor dem Alarm eingeschalteter TV bleibt nach Alarmende eingeschaltet.
+- Spät hochfahrender, vom Alarm gestarteter TV wird weiterhin nach Alarmende überwacht und wieder ausgeschaltet.
+- Bestehende GUIDs, Prefixe, Properties und Konfigurationen bleiben unverändert.
+
 ## 0.1.5
 
 - Samsung-TV optional über bestehende PowerFix-Variablen angebunden; keine direkte Abhängigkeit von einer Samsung-Modul-GUID.

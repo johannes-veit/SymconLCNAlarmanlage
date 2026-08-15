@@ -1,4 +1,4 @@
-# Architektur 0.1.5
+# Architektur 0.1.6
 
 ## Sicherheitskern
 
@@ -40,7 +40,7 @@ Persönliche E-Mail-Adressen werden ausschließlich in Symcon-Properties der lok
 GUIDs, Prefix und bestehende Property-/Ident-Namen nicht ändern. Neue Properties haben neutrale Defaults. Keine Hardwareaktionen oder Benachrichtigungen allein durch ein Update.
 
 
-## Samsung-TV 0.1.5
+## Samsung-TV 0.1.6
 
 - Lose Kopplung über zwei generische Symcon-Variablen: PowerFix-Status (Boolean) und PowerFix-Ein/Aus-Impulsbutton (Integer mit Aktion).
 - Keine direkte Samsung-Modul-GUID und kein Zugriff auf interne Parent-/WebSocket-Objekte.
@@ -48,3 +48,9 @@ GUIDs, Prefix und bestehende Property-/Ident-Namen nicht ändern. Neue Propertie
 - `TVControl` läuft nur bei tatsächlichem Start-/Stop-Nachlauf. Die 10-s-Prüfung liest ausschließlich die lokale Statusvariable.
 - EIN-Befehle prüfen unmittelbar davor die aktive Session-ID; AUS-Befehle werden unterdrückt, sobald wieder eine aktive Alarm-Session existiert.
 - Nach maximal 60 s Abschaltüberwachung: ein letzter OFF-Impuls und genau eine Abschlusskontrolle; danach nur Logeintrag, keine Endlosschleife.
+
+### TV-Startkorrektur 0.1.6
+
+Der erste Einschaltimpuls läuft über den vorhandenen PowerFix. Da PowerFix im Zustand `STARTING` weitere Button-Impulse bewusst blockiert, darf die Alarmanlage während einer aktiven Alarm-Session bei weiterhin AUS gemeldetem TV nach 5 s und 10 s maximal zwei zusätzliche native `SamsungTizen_WakeUp()`-Aufrufe senden. Nach Alarmende werden keine Wake-Versuche mehr erzeugt.
+
+Der Zustand vor Alarmbeginn wird berücksichtigt: War der TV bereits EIN, bleibt er nach Alarmende EIN. War er AUS und wurde durch den Alarm gestartet, wird der Ausschalt-/Nachkontrollpfad aktiviert.

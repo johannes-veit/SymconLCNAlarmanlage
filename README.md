@@ -1,8 +1,8 @@
 # LCN Alarmanlage für IP-Symcon 9
 
-## Version 0.1.5
+## Version 0.1.6
 
-Version 0.1.5 erweitert die real getestete Referenz 0.1.4 ausschließlich um die optionale Samsung-TV-Powersteuerung und eine strengere Push-Visualisierungsauswahl. GUS-, Alarm-, Panik-, Quittierungs-, Countdown-, Push- und E-Mail-Logik bleiben unverändert.
+Version 0.1.6 korrigiert ausschließlich die Samsung-TV-Powersteuerung aus 0.1.5. GUS-, Alarm-, Panik-, Quittierungs-, Countdown-, Push- und E-Mail-Logik bleiben unverändert. Der erste TV-Start läuft weiter über den getesteten PowerFix; solange eine echte Alarm-Session aktiv ist und der TV noch AUS meldet, folgen nach 5 s und 10 s maximal zwei zusätzliche native Wake-on-LAN-Versuche. Nach Alarmende werden keine weiteren Wake-Versuche gesendet. War der TV bereits vor dem Alarm EIN, wird er nach Alarmende nicht ausgeschaltet.
 
 ### Samsung-TV
 
@@ -21,11 +21,11 @@ Eine neue aktive Alarm-Session hat immer Vorrang vor einem alten Abschaltauftrag
 
 ### Noch nicht enthalten
 
-Der spezielle rote/blinkende Alarmbildschirm mit Sirenenton auf dem Fernseher ist bewusst noch nicht Bestandteil von 0.1.5. Zuerst wird die reine Powersteuerung real getestet.
+Der spezielle rote/blinkende Alarmbildschirm mit Sirenenton auf dem Fernseher ist bewusst noch nicht Bestandteil von 0.1.6. Zuerst wird die reine Powersteuerung real getestet.
 
 ### Push
 
-Die Auswahl `Kachelvisualisierung für Push` wird in 0.1.5 dynamisch auf Module mit dem Symcon-Präfix `VISU` eingeschränkt. Zusätzlich wird die gewählte Instanz beim Anwenden geprüft.
+Die Auswahl `Kachelvisualisierung für Push` wird in 0.1.6 dynamisch auf Module mit dem Symcon-Präfix `VISU` eingeschränkt. Zusätzlich wird die gewählte Instanz beim Anwenden geprüft.
 
 ### Update
 
