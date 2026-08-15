@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.6: stabiler Alarmkern aus 0.1.4 plus korrigierte Samsung-TV EIN/AUS-Steuerung mit begrenzten WOL-Wiederholungen. Die spezielle Alarmanzeige/-sirene auf dem TV ist noch nicht enthalten."
+            "label": "Testversion 0.1.4: stabiler Alarmkern aus 0.1.3 plus Push an die Symcon-App und E-Mail. Neue Benachrichtigungen sind nach dem Update bewusst AUS und werden erst nach Auswahl der passenden Instanzen aktiviert."
         },
         {
             "type": "List",
@@ -110,7 +110,7 @@
         {
             "type": "SelectInstance",
             "name": "PushVisualizationID",
-            "caption": "Kachelvisualisierung für Push (nur Kachel-Visu)"
+            "caption": "Kachelvisualisierung für Push"
         },
         {
             "type": "Label",
@@ -136,31 +136,6 @@
             "label": "Die Empfänger werden nur in der Symcon-Instanzkonfiguration gespeichert und nicht im Modul-Repository. Jede Adresse erhält pro Alarm-Session genau eine E-Mail. Ein Ausfall von Push/SMTP legt den Alarmkern nicht still; Fehler werden protokolliert."
         },
         {
-            "type": "CheckBox",
-            "name": "TVEnabled",
-            "caption": "Samsung-TV bei Alarm einschalten"
-        },
-        {
-            "type": "SelectVariable",
-            "name": "TVStatusVariableID",
-            "caption": "Samsung-TV – Status (Boolean)",
-            "validVariableTypes": [
-                0
-            ]
-        },
-        {
-            "type": "SelectVariable",
-            "name": "TVPowerButtonVariableID",
-            "caption": "Samsung-TV – Ein/Aus Impulsbutton (PowerFix)",
-            "validVariableTypes": [
-                1
-            ]
-        },
-        {
-            "type": "Label",
-            "label": "Verwendet den bestehenden Samsung Tizen PowerFix: Status ist die reale EIN/AUS-Booleanvariable, Ein/Aus ist der von PowerFix erzeugte Integer-Impulsbutton. Bei Alarm wird der TV nur bei bestätigtem AUS eingeschaltet. Nach Alarmende wird AUS angefordert und anschließend 10-sekündlich maximal 60 s lokal kontrolliert; ein verspätet hochfahrender TV wird dadurch ebenfalls wieder ausgeschaltet. Keine Endlosschleife und kein zusätzliches TV-Polling durch die Alarmanlage."
-        },
-        {
             "type": "NumberSpinner",
             "name": "AlarmDurationSeconds",
             "caption": "Alarmdauer bis automatische Abschaltung (Sekunden)",
@@ -182,7 +157,7 @@
     "actions": [
         {
             "type": "Label",
-            "label": "Kein LCN-Polling: GUS und Panik-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Push/E-Mail laufen nur beim ersten Trigger. Die Samsung-TV-Nachkontrolle liest nur die lokale PowerFix-Statusvariable und erzeugt selbst kein zusätzliches TV-Polling."
+            "label": "Kein Polling: GUS und Panik-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Push/E-Mail werden nur beim ersten Trigger einer Alarm-Session in einer kurzen lokalen Warteschlange versendet."
         }
     ]
 }
