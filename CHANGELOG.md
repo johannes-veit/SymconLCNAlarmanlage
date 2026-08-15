@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+- Korrigiert die Panik-Ansteuerung aus 0.1.2: Die sichtbare Integer-Statusvariable von `LCNLightGroup` ist eine read-only Rückmeldung und besitzt keine VariableAction.
+- Die Panik-Lichtgruppe wird deshalb nicht mehr über deren Statusvariable geschaltet.
+- Stattdessen werden die bereits ausgewählten `LCN Licht -> Status`-Booleanvariablen verwendet. Nur Leuchten mit abweichendem Istzustand erhalten einen Befehl.
+- Zwischen tatsächlich notwendigen Lichtbefehlen liegen 100 ms; der Timer ist nur während der kurzen Befehlsserie aktiv und erzeugt kein Polling.
+- EIN-Aufträge einer inzwischen quittierten Session werden abgebrochen; alte AUS-Aufträge dürfen keine neue aktive Session ausschalten.
+- Die optionale Gruppen-Statusvariable bleibt als reine Kontrollreferenz erhalten.
+- GUIDs, Prefix und bestehende Property-Namen bleiben unverändert; vorhandene 0.1.2-Konfigurationen werden übernommen.
+
 ## 0.1.2
 
 - stabile 0.1.1-Alarmkernlogik unverändert fortgeführt

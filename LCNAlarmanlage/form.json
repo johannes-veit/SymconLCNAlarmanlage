@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.2: stabiler Alarmkern aus 0.1.1 plus Paniklicht und Quittierung über ausgeschaltete Panik-Lichter. Noch ohne Push, E-Mail und Samsung-TV."
+            "label": "Testversion 0.1.3: stabiler Alarmkern aus 0.1.1 plus Paniklicht/Quittierung. Korrektur: Die read-only Gruppen-Statusvariable wird nicht mehr als Aktion benutzt. Noch ohne Push, E-Mail und Samsung-TV."
         },
         {
             "type": "List",
@@ -48,19 +48,19 @@
         {
             "type": "SelectVariable",
             "name": "PanicGroupVariableID",
-            "caption": "Panik-Lichtgruppe – Statusvariable",
+            "caption": "Panik-Lichtgruppe – Status (optional, nur Kontrolle)",
             "validVariableTypes": [
                 1
             ]
         },
         {
             "type": "Label",
-            "label": "Bei Alarm wird die ausgewählte Lichtgruppe explizit auf EIN gesetzt; bei Quittierung, automatischem Alarmende oder vollständigem Ausschalten wieder explizit auf AUS. Die vorhandene Gruppenlogik bleibt unverändert."
+            "label": "Der Integer-Status der Panik-Lichtgruppe ist nur eine optionale Kontrollanzeige. Geschaltet werden die unten ausgewählten LCN-Licht-Statusvariablen einzeln: nur bei abweichendem Zustand und mit 100 ms Abstand zwischen tatsächlich notwendigen LCN-Befehlen."
         },
         {
             "type": "List",
             "name": "AcknowledgeLights",
-            "caption": "Alarm quittieren über Panik-Lichter",
+            "caption": "Panik-Lichter / Quittierung über Lichttaster",
             "rowCount": 6,
             "add": true,
             "delete": true,
@@ -100,7 +100,7 @@
         },
         {
             "type": "Label",
-            "label": "Quittierung nur bei einer echten EIN→AUS-Flanke während eines aktiven Alarms. PANIK EIN kann sich deshalb nicht selbst quittieren; PANIK AUS erfolgt erst nachdem die Alarm-Session bereits verriegelt wurde."
+            "label": "Die unten ausgewählten Boolean-Statusvariablen müssen eine nutzbare Symcon-Aktion besitzen. Quittierung erfolgt nur bei einer echten EIN→AUS-Flanke während eines aktiven Alarms. PANIK EIN kann sich dadurch nicht selbst quittieren."
         },
         {
             "type": "NumberSpinner",
@@ -124,7 +124,7 @@
     "actions": [
         {
             "type": "Label",
-            "label": "Kein Polling: GUS und Quittier-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Die Panikgruppe erhält nur bei Alarmbeginn/-ende einen definierten EIN/AUS-Aktionsaufruf."
+            "label": "Kein Polling: GUS und Panik-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Panikbefehle laufen nur während Alarmbeginn/-ende in einer kurzen 100-ms-Warteschlange."
         }
     ]
 }

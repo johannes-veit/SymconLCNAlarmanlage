@@ -164,6 +164,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterTimer('RearmTimeout', 0, 'LCNALARM_RearmTimeout($_IPS[\'TARGET\']);');
         $this->RegisterTimer('RearmDisplay', 0, 'LCNALARM_RearmDisplay($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ScheduleTimer', 0, 'LCNALARM_ScheduleTimer($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('PanicQueue', 0, 'LCNALARM_PanicQueue($_IPS[\'TARGET\']);');
 
         $this->RegisterMessage(0, IPS_KERNELSTARTED);
     }
@@ -177,6 +178,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('RearmTimeout', 0);
         $this->SetTimerInterval('RearmDisplay', 0);
         $this->SetTimerInterval('ScheduleTimer', 0);
+        $this->SetTimerInterval('PanicQueue', 0);
 
         if (IPS_GetKernelRunlevel() !== KR_READY) {
             $this->SetValue('Status', 'INITIALISIERUNG');
@@ -416,6 +418,81 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RefreshDisplay();
     }
 
+    /**
+     * Kurzlebiger 100-ms-Worker fuer die Paniklichter. Er ist nur aktiv, solange
+     * tatsaechlich einzelne Lichtbefehle abzuarbeiten sind. Es gibt kein Polling.
+     */
+    public function PanicQueue(): void
+    {
+        $this->SetTimerInterval('PanicQueue', 0);
+
+        $queue = json_decode($this->GetBuffer('PanicQueue'), true);
+        if (!is_array($queue) || $queue === []) {
+            $this->SetBuffer('PanicQueue', '[]');
+            return;
+        }
+
+        $item = array_shift($queue);
+        $this->SetBuffer('PanicQueue', $this->Encode($queue));
+
+        if (!is_array($item)) {
+            if ($queue !== []) {
+                $this->SetTimerInterval('PanicQueue', 100);
+            }
+            return;
+        }
+
+        $variableID = (int) ($item['id'] ?? 0);
+        $target = (bool) ($item['target'] ?? false);
+        $sessionID = (string) ($item['sessionID'] ?? '');
+        $reason = (string) ($item['reason'] ?? 'panic');
+
+        // EIN-Befehle einer inzwischen quittierten/abgelaufenen Session duerfen
+        // nicht nachlaufen. Ein alter AUS-Worker darf umgekehrt niemals eine
+        // eventuell bereits neue aktive Alarm-Session dunkel schalten.
+        if ($target) {
+            if ($sessionID === '' || !$this->IsActiveSession($sessionID)) {
+                $this->SetBuffer('PanicQueue', '[]');
+                return;
+            }
+        } elseif ($this->HasAnyActiveSession()) {
+            $this->SetBuffer('PanicQueue', '[]');
+            return;
+        }
+
+        if ($variableID > 0 && IPS_VariableExists($variableID)) {
+            try {
+                $variable = IPS_GetVariable($variableID);
+                if ((int) $variable['VariableType'] !== VARIABLETYPE_BOOLEAN) {
+                    throw new Exception('Zielvariable ist nicht Boolean');
+                }
+                if (!HasAction($variableID)) {
+                    throw new Exception('Zielvariable besitzt keine Aktion');
+                }
+
+                $current = (bool) GetValue($variableID);
+                if ($current !== $target) {
+                    $ok = RequestActionEx($variableID, $target, 'LCN Alarmanlage');
+                    if (!$ok) {
+                        throw new Exception('RequestActionEx meldete FALSE');
+                    }
+                }
+            } catch (Throwable $e) {
+                IPS_LogMessage(
+                    'LCN Alarmanlage #' . $this->InstanceID,
+                    'Paniklicht #' . $variableID . ' ' . ($target ? 'EIN' : 'AUS') .
+                    ' fehlgeschlagen (' . $reason . '): ' . $e->getMessage()
+                );
+                $this->SendDebug('Panic', 'Variable #' . $variableID . ': ' . $e->getMessage(), 0);
+            }
+        }
+
+        $queue = json_decode($this->GetBuffer('PanicQueue'), true);
+        if (is_array($queue) && $queue !== []) {
+            $this->SetTimerInterval('PanicQueue', 100);
+        }
+    }
+
     /** Einmal-Timer für die nächste EIN- oder AUS-Zeitgrenze. */
     public function ScheduleTimer(): void
     {
@@ -436,11 +513,13 @@ class LCNAlarmanlage extends IPSModuleStrict
         // Während der Rekonstruktion dürfen eintreffende Sensorupdates nur die Baseline
         // aktualisieren, aber niemals einen historischen Alarm erzeugen.
         $this->SetBuffer('RuntimeReady', '0');
+        $this->SetBuffer('PanicQueue', '[]');
 
         $this->SetTimerInterval('AlarmTimeout', 0);
         $this->SetTimerInterval('RearmTimeout', 0);
         $this->SetTimerInterval('RearmDisplay', 0);
         $this->SetTimerInterval('ScheduleTimer', 0);
+        $this->SetTimerInterval('PanicQueue', 0);
 
         $this->UnregisterOldSensorMessages();
         $this->UnregisterOldAcknowledgeMessages();
@@ -458,6 +537,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         if ($errors !== []) {
             $this->SetBuffer('ConfigurationOK', '0');
             $this->SetTimerInterval('ScheduleTimer', 0);
+            $this->SetTimerInterval('PanicQueue', 0);
             $this->SetSummary('Konfigurationsfehler');
             try {
                 $this->SetArmedInternal(false, 'configuration-error');
@@ -474,6 +554,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         if ($sensorMap === []) {
             $this->SetBuffer('ConfigurationOK', '0');
             $this->SetTimerInterval('ScheduleTimer', 0);
+            $this->SetTimerInterval('PanicQueue', 0);
             $this->SetSummary('Keine GUS');
             try {
                 $this->SetArmedInternal(false, 'no-sensors');
@@ -515,11 +596,11 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $summary = count($sensorMap) . ' GUS';
-        if ($panicVariableID > 0) {
-            $summary .= ' · Panik';
-        }
         if ($acknowledgeMap !== []) {
-            $summary .= ' · ' . count($acknowledgeMap) . ' Quittier-Lichter';
+            $summary .= ' · Panik ' . count($acknowledgeMap) . ' Lichter';
+        }
+        if ($panicVariableID > 0) {
+            $summary .= ' · Gruppenstatus';
         }
         $this->SetSummary($summary);
 
@@ -568,9 +649,9 @@ class LCNAlarmanlage extends IPSModuleStrict
             }
         }
 
-        // Bei einem Neustart während einer noch aktiven Alarm-Session wird die
-        // Panikgruppe deterministisch erneut auf EIN angefordert. Die Gruppenlogik
-        // sendet nur an Leuchten, die laut Rückmeldung noch AUS sind.
+        // Bei einem Neustart während einer noch aktiven Alarm-Session werden die
+        // konfigurierten Paniklichter deterministisch erneut auf EIN angefordert.
+        // Bereits eingeschaltete Leuchten erhalten dabei keinen weiteren Befehl.
         if ($sessionState === self::SESSION_ACTIVE) {
             $sessionID = (string) ($session['id'] ?? '');
             if ($sessionID !== '') {
@@ -771,13 +852,13 @@ class LCNAlarmanlage extends IPSModuleStrict
 
     private function SetPanicForSession(string $SessionID, bool $On, string $Reason): void
     {
-        $variableID = $this->PanicGroupVariableID();
-        if ($variableID <= 0) {
-            return;
-        }
-
-        if (!IPS_VariableExists($variableID)) {
-            $this->HandleAuxiliaryUnavailable($variableID);
+        // Die sichtbare Integer-Statusvariable der LCNLightGroup ist absichtlich
+        // read-only und besitzt keine VariableAction. Geschaltet werden deshalb
+        // die explizit konfigurierten LCNLight-Statusvariablen. Damit bilden wir
+        // die Gruppenregel deterministisch nach: nur abweichende Leuchten erhalten
+        // einen Befehl, und zwischen zwei Befehlen liegen 100 ms.
+        $map = $this->ReadAcknowledgeMap();
+        if ($map === []) {
             return;
         }
 
@@ -785,34 +866,39 @@ class LCNAlarmanlage extends IPSModuleStrict
             return;
         }
 
-        try {
-            $ok = RequestActionEx($variableID, $On ? 1 : 0, 'LCN Alarmanlage');
-            if (!$ok) {
-                throw new Exception('RequestActionEx meldete FALSE');
+        $queue = [];
+        foreach ($map as $light) {
+            $variableID = (int) ($light['id'] ?? 0);
+            if ($variableID <= 0 || !IPS_VariableExists($variableID)) {
+                continue;
             }
-        } catch (Throwable $e) {
-            IPS_LogMessage(
-                'LCN Alarmanlage #' . $this->InstanceID,
-                'Paniklicht ' . ($On ? 'EIN' : 'AUS') . ' fehlgeschlagen (' . $Reason . '): ' . $e->getMessage()
-            );
-            $this->SendDebug('Panic', 'Fehler: ' . $e->getMessage(), 0);
-            return;
+
+            try {
+                $current = (bool) GetValue($variableID);
+            } catch (Throwable $e) {
+                continue;
+            }
+
+            if ($current === $On) {
+                continue;
+            }
+
+            $queue[] = [
+                'id' => $variableID,
+                'target' => $On,
+                'sessionID' => $SessionID,
+                'reason' => $Reason
+            ];
         }
 
-        // Race-Schutz: Wurde zwischen Vorprüfung und dem externen Gruppenbefehl der
-        // Alarm quittiert, wird die Gruppe sofort wieder deterministisch ausgeschaltet.
-        // Falls in einem extremen Randfall inzwischen bereits eine NEUE aktive Session
-        // existiert, darf deren Paniklicht durch das Cleanup der alten Session nicht
-        // ausgeschaltet werden.
-        if ($On && !$this->IsActiveSession($SessionID) && !$this->HasAnyActiveSession()) {
-            try {
-                RequestActionEx($variableID, 0, 'LCN Alarmanlage');
-            } catch (Throwable $e) {
-                IPS_LogMessage(
-                    'LCN Alarmanlage #' . $this->InstanceID,
-                    'Paniklicht Race-Cleanup AUS fehlgeschlagen: ' . $e->getMessage()
-                );
-            }
+        // Jeder neue definierte Panikzustand ersetzt einen eventuell noch laufenden
+        // alten Auftrag. So kann insbesondere eine Quittierung eine noch laufende
+        // EIN-Serie sofort in eine AUS-Serie umwandeln.
+        $this->SetTimerInterval('PanicQueue', 0);
+        $this->SetBuffer('PanicQueue', $this->Encode($queue));
+        if ($queue !== []) {
+            // Erstes Licht sofort, weitere mit 100 ms Abstand.
+            $this->PanicQueue();
         }
     }
 
@@ -858,6 +944,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetBuffer('ConfigurationOK', '0');
         $this->SetBuffer('RuntimeReady', '0');
         $this->SetTimerInterval('ScheduleTimer', 0);
+        $this->SetTimerInterval('PanicQueue', 0);
         $this->WriteAttributeInteger('ManualOverride', self::OVERRIDE_OFF);
 
         try {
@@ -1312,7 +1399,11 @@ class LCNAlarmanlage extends IPSModuleStrict
 
             $variable = IPS_GetVariable($variableID);
             if ((int) $variable['VariableType'] !== VARIABLETYPE_BOOLEAN) {
-                $errors[] = 'Quittier-Licht Zeile ' . ($index + 1) . ': keine Boolean-Variable';
+                $errors[] = 'Panik-Licht Zeile ' . ($index + 1) . ': keine Boolean-Variable';
+                continue;
+            }
+            if (!HasAction($variableID)) {
+                $errors[] = 'Panik-Licht Zeile ' . ($index + 1) . ': Statusvariable besitzt keine nutzbare Aktion';
                 continue;
             }
 
@@ -1354,13 +1445,9 @@ class LCNAlarmanlage extends IPSModuleStrict
             return [0, ['Panikgruppe: Statusvariable muss Integer sein']];
         }
 
-        // Dokumentierter Symcon-Weg: nur Variablen mit vorhandener Aktion zulassen.
-        // Damit muss das Alarmmodul weder VariableAction noch VariableCustomAction
-        // semantisch nachbilden und bleibt gegenüber Aktionsskripten/Standardaktionen robust.
-        if (!HasAction($variableID)) {
-            return [0, ['Panikgruppe: Statusvariable besitzt keine nutzbare Aktion']];
-        }
-
+        // Die LCNLightGroup-Statusvariable ist eine reine Integer-Rueckmeldung
+        // (0=AUS, 1=EIN, 2=GEMISCHT, 3=UNBEKANNT) und muss keine VariableAction
+        // besitzen. Sie dient hier nur als optionale Referenz/Kontrollanzeige.
         return [$variableID, []];
     }
 

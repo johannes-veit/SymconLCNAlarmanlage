@@ -1,8 +1,8 @@
 # LCN Alarmanlage für IP-Symcon 9
 
-## Version 0.1.2
+## Version 0.1.3
 
-Version 0.1.2 erweitert den real getesteten Alarmkern 0.1.1 ausschließlich um Paniklicht und eine lokale LCN-/Licht-Quittierung. Push, E-Mail und Samsung-TV bleiben absichtlich noch außen vor.
+Version 0.1.3 erweitert den real getesteten Alarmkern 0.1.1 ausschließlich um Paniklicht und eine lokale LCN-/Licht-Quittierung. Push, E-Mail und Samsung-TV bleiben absichtlich noch außen vor.
 
 ### Alarmquellen
 
@@ -36,3 +36,8 @@ Eine Quittierung beendet nur den aktuellen Alarm. Der Hauptschalter bleibt EIN. 
 - Prefix bleibt `LCNALARM`
 - bestehende Sensor-, Zeit- und Alarmkonfigurationen aus 0.1.1 bleiben erhalten
 - neue Panik-/Quittierfelder sind standardmäßig leer und damit wirkungslos
+
+
+## Paniklicht 0.1.3
+
+Die `LCNLightGroup`-Statusvariable ist eine reine Integer-Rückmeldung. Das Alarmmodul benutzt sie nicht als Aktionsvariable. Geschaltet werden stattdessen die explizit konfigurierten Boolean-Statusvariablen der Gruppenmitglieder. Nur abweichende Zustände werden per `RequestActionEx()` geändert; zwischen notwendigen Befehlen liegen 100 ms.
