@@ -1,0 +1,12 @@
+{
+    "id": "{931F4DEE-ED55-42F9-9DDB-A8C23293A89D}",
+    "author": "Eigene Module",
+    "name": "LCN Alarmanlage",
+    "url": "",
+    "compatibility": {
+        "version": "9.0"
+    },
+    "version": "0.1.0",
+    "build": 1,
+    "date": 1786752000
+}

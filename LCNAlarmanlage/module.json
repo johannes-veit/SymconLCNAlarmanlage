@@ -1,0 +1,14 @@
+{
+    "id": "{F5B0CD30-B98C-4580-BD71-432F3018628F}",
+    "name": "LCN Alarmanlage",
+    "type": 3,
+    "vendor": "Eigene Module",
+    "aliases": [
+        "LCN Alarmanlage"
+    ],
+    "url": "",
+    "parentRequirements": [],
+    "childRequirements": [],
+    "implemented": [],
+    "prefix": "LCNALARM"
+}

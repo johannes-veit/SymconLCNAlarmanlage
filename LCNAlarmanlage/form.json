@@ -1,0 +1,71 @@
+{
+    "elements": [
+        {
+            "type": "Label",
+            "label": "Testversion 0.1.0: sicherheitskritischer Kern ohne Paniklicht, Push, E-Mail und Samsung-TV. Die Automatik ist nach der Installation absichtlich AUS."
+        },
+        {
+            "type": "List",
+            "name": "Sensors",
+            "caption": "LCN-GUS / native Binäreingänge",
+            "rowCount": 8,
+            "add": true,
+            "delete": true,
+            "changeOrder": true,
+            "columns": [
+                {
+                    "caption": "Aktiv",
+                    "name": "Enabled",
+                    "width": "70px",
+                    "add": true,
+                    "edit": {
+                        "type": "CheckBox"
+                    }
+                },
+                {
+                    "caption": "Bezeichnung",
+                    "name": "Name",
+                    "width": "auto",
+                    "add": "",
+                    "edit": {
+                        "type": "ValidationTextBox"
+                    }
+                },
+                {
+                    "caption": "Boolean-Variable",
+                    "name": "VariableID",
+                    "width": "260px",
+                    "add": 0,
+                    "edit": {
+                        "type": "SelectVariable",
+                        "validVariableTypes": [0]
+                    }
+                }
+            ]
+        },
+        {
+            "type": "NumberSpinner",
+            "name": "AlarmDurationSeconds",
+            "caption": "Alarmdauer bis automatische Abschaltung (Sekunden)",
+            "minimum": 10,
+            "maximum": 3600
+        },
+        {
+            "type": "NumberSpinner",
+            "name": "RearmDelaySeconds",
+            "caption": "Wiederbereitschaft nach automatischem Alarmende (Sekunden)",
+            "minimum": 0,
+            "maximum": 3600
+        },
+        {
+            "type": "Label",
+            "label": "Die Zeitautomatik wird in der Visualisierung über Automatik, Scharf ab und Unscharf ab eingestellt. Manuelle Bedienung überschreibt die Automatik bis zur nächsten Zeitgrenze."
+        }
+    ],
+    "actions": [
+        {
+            "type": "Label",
+            "label": "Keine LCN-Abfragen/Polling: Das Modul reagiert ausschließlich auf spontane VM_UPDATE-Meldungen der ausgewählten Boolean-Variablen."
+        }
+    ]
+}
