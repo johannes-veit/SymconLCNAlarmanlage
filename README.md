@@ -1,12 +1,23 @@
 # LCN Alarmanlage für IP-Symcon 9
 
-## Version 0.1.4
+## Version 0.1.8
 
-Version 0.1.4 erweitert den real getesteten Alarmkern 0.1.3 ausschließlich um Push und E-Mail. Samsung-TV bleibt absichtlich noch außen vor.
+Version 0.1.8 basiert weiterhin **direkt auf der real getesteten stabilen Version 0.1.4**. Die TV-Erweiterung aus 0.1.7 wurde nochmals abgesichert. Zusätzlich erhält jeder konfigurierte GUS einen eigenen persistenten EIN/AUS-Schalter in der normalen Symcon-Visualisierung.
 
 ### Alarmquellen
 
 Vorhandene native LCN-GUS-Binäreingänge werden als Boolean-Variablen ausgewählt. Die Auswertung erfolgt ereignisgesteuert über `VM_UPDATE`; es gibt kein zyklisches LCN-Polling.
+
+
+### GUS-Auswahl direkt in der Visualisierung
+
+Für jeden in der Modulkonfiguration aktiv eingetragenen GUS wird dynamisch eine Boolean-Statusvariable angelegt. Ihr sichtbarer Name entspricht exakt der dort vergebenen Bezeichnung. Neue GUS starten mit `EIN`, damit ein Update das bisherige Überwachungsverhalten nicht stillschweigend reduziert.
+
+- `EIN`: dieser GUS wird als Alarmquelle ausgewertet
+- `AUS`: Status wird weiterhin intern mitgeführt, aber der GUS löst keinen Alarm aus
+- die Auswahl bleibt über Neustarts/Updates erhalten
+- Zuschalten eines gerade aktiven Melders erzeugt keinen Sofortalarm; die Anlage wartet erst auf einen freien Zustand
+- wenn kein GUS aktiv ist, wird dies in der Statusanzeige ausdrücklich kenntlich gemacht
 
 ### Paniklicht und Quittierung
 
@@ -14,35 +25,42 @@ Die sichtbare Integer-Statusvariable der vorhandenen `LCNLightGroup` ist nur ein
 
 Eine echte Statusflanke `EIN -> AUS` eines freigegebenen Paniklichts während einer aktiven Alarm-Session quittiert den aktuellen Alarm. Die Alarmanlage selbst bleibt EIN. Nach freien Bewegungsmeldern läuft `Wieder scharf in …`; danach ist die Anlage wieder scharf.
 
-### Push
+### Push und E-Mail
 
-Push ist nach dem Update standardmäßig AUS. Nach Auswahl der vorhandenen **Kachelvisualisierung** kann Push aktiviert werden. Beim ersten GUS-Trigger einer Alarm-Session wird genau eine Nachricht erzeugt:
+Push und E-Mail entsprechen dem getesteten Stand 0.1.4. Pro Alarm-Session wird nur beim ersten GUS-Trigger eine Benachrichtigung eingeplant. Weitere Bewegungen ergänzen ausschließlich das Bewegungsprofil. Persönliche Empfängeradressen bleiben ausschließlich in der lokalen Symcon-Instanzkonfiguration.
 
-- Titel: `ALARM AUSGELÖST!`
-- Text: Erstauslöser und Zeitpunkt
-- Ton: `siren`
-- Antippen: öffnet direkt die Kachel dieser Alarmanlagen-Instanz
+### Samsung-TV
 
-Weitere GUS-Bewegungen derselben Session erweitern nur das Bewegungsprofil und erzeugen keine weiteren Push-Nachrichten.
+Die TV-Funktion ist nach dem Update standardmäßig AUS. Konfiguriert werden ausschließlich:
 
-### E-Mail
+- die vorhandene `SamsungTizen`-Instanz
+- die vorhandene Boolean-Statusvariable des TV
 
-E-Mail ist nach dem Update standardmäßig AUS. Es wird eine vorhandene **SMTP-Instanz** ausgewählt. Mehrere Empfänger können mit Semikolon, Komma oder Zeilenumbruch getrennt eingetragen werden. Jede gültige Adresse erhält beim ersten Trigger einer Alarm-Session genau eine E-Mail über `SMTP_SendMailEx()`.
+Die PowerFix-Impulsvariable wird **nicht** verwendet.
 
-Persönliche Empfängeradressen sind absichtlich **nicht Bestandteil des Repositorys**. Sie werden ausschließlich in der lokalen IP-Symcon-Instanzkonfiguration gespeichert.
+Ablauf beim Alarmstart:
 
-Die Mail enthält Alarm-ID, Erstauslöser und Zeitpunkt. Ein direkter Quittierungslink in der E-Mail ist in 0.1.4 noch nicht enthalten. Die Symcon-Push-Nachricht öffnet stattdessen unmittelbar die Alarmkachel mit dem vorhandenen Button `Alarm deaktivieren`.
+1. TV-Status lokal lesen.
+2. Bereits EIN: keine Aktion; der TV bleibt auch nach dem Alarm EIN.
+3. AUS: sofort `SamsungTizen_WakeUp()` senden.
+4. Nach 5 s noch AUS: genau ein zweiter `SamsungTizen_WakeUp()`.
+5. Danach keine weiteren Wake-Versuche.
 
-### Entkopplung und Fehlerverhalten
+Ablauf beim Alarmende, falls der TV vom Alarm gestartet wurde:
 
-Alarmzustand und Paniklicht werden zuerst gesetzt. Push/SMTP laufen anschließend außerhalb der Alarm-Engine-Semaphore über eine kurzlebige lokale Warteschlange. Ein langsamer oder gestörter Mailserver kann daher die GUS-Auswertung und Quittierung nicht blockieren.
+1. ausstehenden Wake-Retry sofort stoppen
+2. wenn TV EIN: `SamsungTizen_SendKeys(..., 'KEY_POWER')`
+3. nach 10 s lokalen TV-Status kontrollieren
+4. falls weiterhin EIN: erneut `KEY_POWER`
+5. begrenzte Nachkontrolle; keine Endlosschleife
 
-Benachrichtigungsfehler werden im Symcon-Log/Debug protokolliert, legen die Alarmanlage aber nicht still. Nach einem Neustart wird eine bereits begonnene Benachrichtigungswarteschlange nicht rekonstruiert, um doppelte Zustellungen zu vermeiden.
+Die TV-Helfer besitzen **keinen Pfad**, der `Arm`, `AlarmActive`, `CurrentSession`, Automatik oder den Wieder-scharf-Countdown setzt. Samsung-Fehler werden nur protokolliert und dürfen den Alarmkern nicht beeinflussen.
 
 ### Updateprinzip
 
 - Bibliotheks-GUID bleibt `{931F4DEE-ED55-42F9-9DDB-A8C23293A89D}`
 - Modul-GUID bleibt `{F5B0CD30-B98C-4580-BD71-432F3018628F}`
 - Prefix bleibt `LCNALARM`
-- bestehende Sensor-, Panik-, Zeit- und Alarmkonfigurationen aus 0.1.3 bleiben erhalten
-- neue Push-/E-Mail-Properties haben neutrale Defaults und erzeugen durch das Update keine Benachrichtigung
+- alle bestehenden 0.1.4-Properties und Variablen-Idents bleiben erhalten
+- neue TV-Properties haben neutrale Defaults; ein Update allein sendet keinen TV-Befehl
+- keine Hardwareaktion allein durch `ApplyChanges()`

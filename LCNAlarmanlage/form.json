@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.4: stabiler Alarmkern aus 0.1.3 plus Push an die Symcon-App und E-Mail. Neue Benachrichtigungen sind nach dem Update bewusst AUS und werden erst nach Auswahl der passenden Instanzen aktiviert."
+            "label": "Testversion 0.1.8: stabiler Kern aus 0.1.4, direkte Samsung-WakeUp-Logik und neue GUS-EIN/AUS-Schalter in der Visualisierung."
         },
         {
             "type": "List",
@@ -14,7 +14,7 @@
             "changeOrder": true,
             "columns": [
                 {
-                    "caption": "Aktiv",
+                    "caption": "Im Modul",
                     "name": "Enabled",
                     "width": "70px",
                     "add": true,
@@ -44,6 +44,10 @@
                     }
                 }
             ]
+        },
+        {
+            "type": "Label",
+            "label": "Jeder hier aktiv konfigurierte GUS erscheint zusätzlich in der Visualisierung mit der hier vergebenen Bezeichnung und einem eigenen EIN/AUS-Schieberegler. AUS deaktiviert nur diesen Melder für die Alarmüberwachung; LCN und der native Binäreingang bleiben unverändert."
         },
         {
             "type": "SelectVariable",
@@ -136,6 +140,28 @@
             "label": "Die Empfänger werden nur in der Symcon-Instanzkonfiguration gespeichert und nicht im Modul-Repository. Jede Adresse erhält pro Alarm-Session genau eine E-Mail. Ein Ausfall von Push/SMTP legt den Alarmkern nicht still; Fehler werden protokolliert."
         },
         {
+            "type": "CheckBox",
+            "name": "TVEnabled",
+            "caption": "Samsung-TV bei Alarm einschalten"
+        },
+        {
+            "type": "SelectInstance",
+            "name": "TVInstanceID",
+            "caption": "Samsung-TV – SamsungTizen-Instanz"
+        },
+        {
+            "type": "SelectVariable",
+            "name": "TVStatusVariableID",
+            "caption": "Samsung-TV – Status (Boolean)",
+            "validVariableTypes": [
+                0
+            ]
+        },
+        {
+            "type": "Label",
+            "label": "Der TV wird beim ersten Alarmtrigger direkt über SamsungTizen_WakeUp() geweckt. Ist er nach 5 s laut vorhandener Statusvariable noch AUS, wird genau ein zweiter WakeUp gesendet. War der TV vor dem Alarm bereits EIN, bleibt er nach Alarmende EIN. Ein vom Alarm gestarteter TV wird nach Alarmende ausgeschaltet und anschließend lokal nachkontrolliert. Die TV-Helfer ändern niemals den Alarmanlagen-Hauptschalter, die Session oder den Wieder-scharf-Countdown."
+        },
+        {
             "type": "NumberSpinner",
             "name": "AlarmDurationSeconds",
             "caption": "Alarmdauer bis automatische Abschaltung (Sekunden)",
@@ -157,7 +183,7 @@
     "actions": [
         {
             "type": "Label",
-            "label": "Kein Polling: GUS und Panik-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Push/E-Mail werden nur beim ersten Trigger einer Alarm-Session in einer kurzen lokalen Warteschlange versendet."
+            "label": "Kein Polling: GUS und Panik-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Push/E-Mail werden nur beim ersten Trigger versendet. Die TV-Nachkontrolle liest nur kurzzeitig die bereits vorhandene lokale Statusvariable und erzeugt keine LCN-Abfragen."
         }
     ]
 }

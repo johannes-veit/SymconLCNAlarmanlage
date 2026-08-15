@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.8
+
+- v0.1.7 nochmals geprüft und TV-Pfad weiter abgesichert; Grundlage bleibt der stabile 0.1.4-Alarmkern
+- direkter `SamsungTizen_WakeUp()` wird beim ersten Alarmtrigger jetzt vor Paniklicht und Benachrichtigungs-Queue aufgerufen
+- SamsungTizen-Instanz wird technisch gegen die echte Modul-GUID geprüft; Statusvariable muss direkt zu dieser Instanz gehören
+- Push-Auswahl wieder auf echte VISU-Instanzen eingeschränkt
+- alte TV-Ownership wird bei ApplyChanges ohne aktive Alarm-Session sicher verworfen
+- aktive Alarm-Session rekonstruiert nach Symcon-Neustart auch den TV-Helfer
+- jeder konfigurierte GUS erhält eine eigene persistente Boolean-Statusvariable in der Visualisierung
+- Bezeichnung der GUS-Schalter wird direkt aus der Modulkonfiguration übernommen
+- GUS können in der Visualisierung einzeln EIN/AUS geschaltet werden, ohne die LCN-Konfiguration zu verändern
+- ausgeschaltete GUS bleiben technisch registriert, lösen aber keinen Alarm aus und werden nicht in neue Bewegungsereignisse aufgenommen
+- Zuschalten eines aktuell aktiven GUS erzeugt keinen Sofortalarm; die Anlage wartet zunächst auf einen freien Zustand
+- Deaktivieren eines GUS während eines laufenden Alarms beendet die aktuelle Alarm-Session nicht
+- wenn alle GUS deaktiviert sind, zeigt die Visualisierung ausdrücklich `ALARMANLAGE EIN – keine GUS aktiv` statt fälschlich `SCHARF`
+- GUIDs, Prefix, bestehende Properties und bestehende Variablen-Idents bleiben unverändert
+
+## 0.1.7
+
+- basiert direkt auf der stabilen real getesteten 0.1.4; TV-Code aus 0.1.5/0.1.6 wurde vollständig verworfen
+- Samsung-TV optional und nach Update standardmäßig AUS
+- TV EIN direkt über `SamsungTizen_WakeUp()` unmittelbar beim ersten Alarmtrigger
+- genau ein begrenzter Wake-Retry nach 5 s, falls die vorhandene TV-Statusvariable weiterhin AUS meldet
+- PowerFix-Impulsvariable wird nicht mehr verwendet
+- TV war vor Alarm bereits EIN: bleibt nach Alarmende EIN
+- TV wurde vom Alarm gestartet: bei Alarmende `KEY_POWER` und lokale Nachkontrolle im 10-s-Abstand
+- spät hochfahrender, vom Alarm gestarteter TV wird durch begrenzten Nachlauf wieder ausgeschaltet
+- neue Alarm-Session stoppt einen alten TV-AUS-Nachlauf und hat Vorrang
+- TV-Helfer ändern niemals Alarmanlagen-Hauptschalter, Alarm-Session, Automatik oder Wieder-scharf-Countdown
+- Samsung-Fehler werden nur protokolliert; der Alarmkern bleibt betriebsfähig
+- keine Hardwareaktion allein durch Update/ApplyChanges
+- GUIDs, Prefix und sämtliche 0.1.4-Properties/Idents bleiben erhalten
+
 ## 0.1.4
 
 - stabiler Alarmkern 0.1.3 unverändert fortgeführt

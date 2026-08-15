@@ -13,6 +13,7 @@ class LCNAlarmanlage extends IPSModuleStrict
     private const OVERRIDE_OFF = 2;
 
     private const MAX_EVENTS_PER_SESSION = 1000;
+    private const SAMSUNG_TIZEN_MODULE_GUID = '{65BF76B4-042C-4971-A5CC-292FA5E49C86}';
 
     public function Create(): void
     {
@@ -30,6 +31,12 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterPropertyBoolean('EmailEnabled', false);
         $this->RegisterPropertyInteger('SMTPInstanceID', 0);
         $this->RegisterPropertyString('EmailRecipients', '');
+        // Samsung-TV ist optional und nach einem Update bewusst AUS. Die Steuerung
+        // erfolgt direkt ueber die bereits funktionierenden SamsungTizen-Funktionen,
+        // niemals ueber den Alarmkern oder die PowerFix-Impulsvariable.
+        $this->RegisterPropertyBoolean('TVEnabled', false);
+        $this->RegisterPropertyInteger('TVInstanceID', 0);
+        $this->RegisterPropertyInteger('TVStatusVariableID', 0);
 
         $this->RegisterAttributeInteger('ManualOverride', self::OVERRIDE_NONE);
         $this->RegisterAttributeBoolean('ArmedReady', false);
@@ -38,8 +45,17 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterAttributeInteger('SessionCounter', 0);
         $this->RegisterAttributeInteger('RearmNotBefore', 0);
         $this->RegisterAttributeString('RegisteredSensorIDs', '[]');
+        $this->RegisterAttributeString('RegisteredWatchSensorIDs', '[]');
         $this->RegisterAttributeString('RegisteredAcknowledgeIDs', '[]');
         $this->RegisterAttributeInteger('RegisteredPanicVariableID', 0);
+        // TV-Laufzeitstatus ist strikt vom Alarmzustand getrennt. Er dient nur dazu,
+        // einen vom Alarm gestarteten TV spaeter wieder sicher auszuschalten.
+        $this->RegisterAttributeBoolean('TVOwnedByAlarm', false);
+        $this->RegisterAttributeString('TVOwnerSessionID', '');
+        $this->RegisterAttributeInteger('TVWakeAttempts', 0);
+        $this->RegisterAttributeInteger('TVLastWakeAt', 0);
+        $this->RegisterAttributeInteger('TVOffDeadline', 0);
+        $this->RegisterAttributeInteger('TVOffFalseChecks', 0);
 
         $created = $this->RegisterVariableBoolean(
             'Arm',
@@ -173,6 +189,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterTimer('ScheduleTimer', 0, 'LCNALARM_ScheduleTimer($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PanicQueue', 0, 'LCNALARM_PanicQueue($_IPS[\'TARGET\']);');
         $this->RegisterTimer('NotificationQueue', 0, 'LCNALARM_NotificationQueue($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('TVWakeRetry', 0, 'LCNALARM_TVWakeRetry($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('TVOffCheck', 0, 'LCNALARM_TVOffCheck($_IPS[\'TARGET\']);');
 
         $this->RegisterMessage(0, IPS_KERNELSTARTED);
     }
@@ -188,6 +206,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('ScheduleTimer', 0);
         $this->SetTimerInterval('PanicQueue', 0);
         $this->SetTimerInterval('NotificationQueue', 0);
+        $this->SetTimerInterval('TVWakeRetry', 0);
+        $this->SetTimerInterval('TVOffCheck', 0);
 
         if (IPS_GetKernelRunlevel() !== KR_READY) {
             $this->SetValue('Status', 'INITIALISIERUNG');
@@ -195,6 +215,47 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $this->InitializeRuntime();
+    }
+
+    /**
+     * Dynamisches Konfigurationsformular: Push wird auf echte VISU-Module und
+     * Samsung auf die tatsächlich installierte SamsungTizen-Modulklasse begrenzt.
+     */
+    public function GetConfigurationForm(): string
+    {
+        $path = __DIR__ . '/form.json';
+        $json = @file_get_contents($path);
+        $form = is_string($json) ? json_decode($json, true) : null;
+        if (!is_array($form)) {
+            return '{"elements":[{"type":"Label","label":"Konfigurationsformular konnte nicht geladen werden."}]}';
+        }
+
+        $visualizationModules = [];
+        try {
+            foreach (IPS_GetModuleListByType(6) as $moduleID) {
+                $module = IPS_GetModule((string) $moduleID);
+                if (strtoupper((string) ($module['Prefix'] ?? '')) === 'VISU') {
+                    $visualizationModules[] = (string) $moduleID;
+                }
+            }
+        } catch (Throwable $e) {
+            $this->SendDebug('ConfigurationForm', 'Kachelvisualisierungen konnten nicht gefiltert werden: ' . $e->getMessage(), 0);
+        }
+
+        foreach ($form['elements'] as &$element) {
+            if (!is_array($element)) {
+                continue;
+            }
+            if (($element['name'] ?? '') === 'PushVisualizationID' && $visualizationModules !== []) {
+                $element['validModules'] = array_values(array_unique($visualizationModules));
+            }
+            if (($element['name'] ?? '') === 'TVInstanceID') {
+                $element['validModules'] = [self::SAMSUNG_TIZEN_MODULE_GUID];
+            }
+        }
+        unset($element);
+
+        return json_encode($form, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
     }
 
     public function MessageSink(int $TimeStamp, int $SenderID, int $Message, array $Data): void
@@ -229,6 +290,12 @@ class LCNAlarmanlage extends IPSModuleStrict
 
     public function RequestAction(string $Ident, mixed $Value): void
     {
+        if (str_starts_with($Ident, 'WatchSensor')) {
+            $variableID = (int) substr($Ident, strlen('WatchSensor'));
+            $this->SetSensorWatchEnabled($variableID, (bool) $Value);
+            return;
+        }
+
         switch ($Ident) {
             case 'Arm':
                 $armed = (bool) $Value;
@@ -317,7 +384,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->WriteAttributeBoolean('ArmedReady', false);
 
             $states = $this->ReadSensorStates();
-            if ($this->AreAllSensorsClear($states)) {
+            if ($this->AreAllMonitoredSensorsClear($states)) {
                 $delay = max(0, $this->ReadPropertyInteger('RearmDelaySeconds'));
                 $notBefore = time() + $delay;
                 $this->WriteAttributeInteger('RearmNotBefore', $notBefore);
@@ -335,6 +402,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ($endedSessionID !== '') {
             $this->SetPanicForSession($endedSessionID, false, 'automatic-timeout');
+            $this->EndTVForAlarm($endedSessionID, 'automatic-timeout');
         }
 
         if ($startRearmTimer) {
@@ -362,7 +430,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             if (($session['state'] ?? self::SESSION_NONE) === self::SESSION_REARM_WAIT) {
                 $states = $this->ReadSensorStates();
 
-                if (!$this->AreAllSensorsClear($states)) {
+                if (!$this->AreAllMonitoredSensorsClear($states)) {
                     // Ein aktiver Melder hebt die laufende Ruhezeit auf. Die nächste
                     // CLEAR-Flanke aller Melder startet sie erneut.
                     $this->WriteAttributeInteger('RearmNotBefore', 0);
@@ -387,8 +455,9 @@ class LCNAlarmanlage extends IPSModuleStrict
                         $this->WriteAttributeInteger('RearmNotBefore', 0);
 
                         $armed = (bool) $this->GetValue('Arm');
-                        $this->WriteAttributeBoolean('ArmedReady', $armed);
-                        $rearmed = $armed;
+                        $ready = $armed && $this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states);
+                        $this->WriteAttributeBoolean('ArmedReady', $ready);
+                        $rearmed = $ready;
                     }
                 }
             }
@@ -420,7 +489,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $states = $this->ReadSensorStates();
-        if (!$this->AreAllSensorsClear($states) || $this->ReadAttributeInteger('RearmNotBefore') <= 0) {
+        if (!$this->AreAllMonitoredSensorsClear($states) || $this->ReadAttributeInteger('RearmNotBefore') <= 0) {
             $this->SetTimerInterval('RearmDisplay', 0);
         }
 
@@ -581,6 +650,103 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
     }
 
+    /**
+     * Einmaliger, begrenzter Wake-Retry. Der erste WakeUp wird direkt beim
+     * Alarmstart gesendet. Nur wenn der lokale TV-Status nach 5 s weiterhin AUS
+     * meldet, wird genau ein zweiter WakeUp gesendet. Keine Endlosschleife.
+     */
+    public function TVWakeRetry(): void
+    {
+        $this->SetTimerInterval('TVWakeRetry', 0);
+
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false)) {
+            return;
+        }
+
+        $ownerSessionID = $this->ReadAttributeString('TVOwnerSessionID');
+        if ($ownerSessionID === '' || !$this->ReadAttributeBoolean('TVOwnedByAlarm')) {
+            return;
+        }
+
+        // Eine beendete oder inzwischen ersetzte Session darf keinen spaeten WOL
+        // mehr senden.
+        if (!$this->IsActiveSession($ownerSessionID)) {
+            return;
+        }
+
+        if ($this->TVIsOn($config)) {
+            return;
+        }
+
+        $attempts = $this->ReadAttributeInteger('TVWakeAttempts');
+        if ($attempts >= 2) {
+            return;
+        }
+
+        if ($this->SendTVWakeUp($config, 'retry-5s')) {
+            $this->WriteAttributeInteger('TVWakeAttempts', $attempts + 1);
+            $this->WriteAttributeInteger('TVLastWakeAt', time());
+        }
+    }
+
+    /**
+     * Nachlaufkontrolle nach Alarmende. Sie liest nur die vorhandene lokale
+     * Statusvariable. Ein TV, der vom Alarm gestartet wurde, wird bei Bedarf mit
+     * KEY_POWER ausgeschaltet und nach 10 s erneut kontrolliert. Dieser Helfer
+     * veraendert niemals Arm/AlarmActive/Session/Countdown.
+     */
+    public function TVOffCheck(): void
+    {
+        $this->SetTimerInterval('TVOffCheck', 0);
+
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false) || !$this->ReadAttributeBoolean('TVOwnedByAlarm')) {
+            $this->ClearTVOwnership();
+            return;
+        }
+
+        // Ein neuer aktiver Alarm hat immer Vorrang. StartTVForAlarm uebernimmt
+        // in diesem Fall die Ownership fuer die neue Session und stoppt den alten
+        // Abschaltauftrag.
+        $current = $this->ReadSession('CurrentSession');
+        if (($current['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE) {
+            return;
+        }
+
+        $deadline = $this->ReadAttributeInteger('TVOffDeadline');
+        if ($deadline <= 0) {
+            $deadline = time() + 60;
+            $this->WriteAttributeInteger('TVOffDeadline', $deadline);
+        }
+
+        if ($this->TVIsOn($config)) {
+            $this->WriteAttributeInteger('TVOffFalseChecks', 0);
+            $this->SendTVPowerOff($config, 'off-check');
+        } else {
+            $falseChecks = $this->ReadAttributeInteger('TVOffFalseChecks') + 1;
+            $this->WriteAttributeInteger('TVOffFalseChecks', $falseChecks);
+
+            // Zwei bestaetigte AUS-Pruefungen und mindestens 30 s Abstand zum
+            // letzten WakeUp verhindern, dass ein bereits gesendetes WOL-Paket
+            // nach zu fruehem Ende der Ueberwachung doch noch einen TV hochfaehrt.
+            $lastWake = $this->ReadAttributeInteger('TVLastWakeAt');
+            $wakeSettled = $lastWake <= 0 || (time() - $lastWake) >= 30;
+            if ($falseChecks >= 2 && $wakeSettled) {
+                $this->ClearTVOwnership();
+                return;
+            }
+        }
+
+        if (time() >= $deadline) {
+            $this->SendDebug('TV', 'AUS-Nachkontrolle nach 60 s beendet', 0);
+            $this->ClearTVOwnership();
+            return;
+        }
+
+        $this->SetTimerInterval('TVOffCheck', 10000);
+    }
+
     /** Einmal-Timer für die nächste EIN- oder AUS-Zeitgrenze. */
     public function ScheduleTimer(): void
     {
@@ -603,6 +769,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetBuffer('RuntimeReady', '0');
         $this->SetBuffer('PanicQueue', '[]');
         $this->SetBuffer('NotificationQueue', '[]');
+        $this->SetBuffer('TVConfig', '{}');
 
         $this->SetTimerInterval('AlarmTimeout', 0);
         $this->SetTimerInterval('RearmTimeout', 0);
@@ -610,6 +777,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('ScheduleTimer', 0);
         $this->SetTimerInterval('PanicQueue', 0);
         $this->SetTimerInterval('NotificationQueue', 0);
+        $this->SetTimerInterval('TVWakeRetry', 0);
+        $this->SetTimerInterval('TVOffCheck', 0);
 
         $this->UnregisterOldSensorMessages();
         $this->UnregisterOldAcknowledgeMessages();
@@ -619,16 +788,29 @@ class LCNAlarmanlage extends IPSModuleStrict
         [$acknowledgeMap, $acknowledgeErrors] = $this->BuildAcknowledgeMap($sensorMap);
         [$panicVariableID, $panicErrors] = $this->BuildPanicConfig();
         [$notificationConfig, $notificationWarnings] = $this->BuildNotificationConfig();
+        [$tvConfig, $tvWarnings] = $this->BuildTVConfig();
         $errors = array_merge($errors, $acknowledgeErrors, $panicErrors);
 
         $this->SetBuffer('SensorMap', $this->Encode($sensorMap));
         $this->SetBuffer('AcknowledgeMap', $this->Encode($acknowledgeMap));
         $this->SetBuffer('PanicGroupVariableID', (string) $panicVariableID);
         $this->SetBuffer('NotificationConfig', $this->Encode($notificationConfig));
+        $this->SetBuffer('TVConfig', $this->Encode($tvConfig));
+        $this->SetBuffer('NotificationWarnings', $this->Encode($notificationWarnings));
+        $this->SetBuffer('TVWarnings', $this->Encode($tvWarnings));
 
         foreach ($notificationWarnings as $warning) {
             IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Benachrichtigung: ' . $warning);
             $this->SendDebug('NotificationConfig', $warning, 0);
+        }
+        foreach ($tvWarnings as $warning) {
+            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Samsung-TV: ' . $warning);
+            $this->SendDebug('TVConfig', $warning, 0);
+        }
+        if (!(bool) ($tvConfig['enabled'] ?? false)) {
+            // Deaktivierte/ungueltige optionale TV-Funktion darf keinerlei alten
+            // Nachlaufauftrag aus einer frueheren Konfiguration behalten.
+            $this->ClearTVOwnership();
         }
 
         if ($errors !== []) {
@@ -666,6 +848,9 @@ class LCNAlarmanlage extends IPSModuleStrict
             return;
         }
 
+        $this->EnsureSensorWatchVariables($sensorMap);
+        $this->SetStaticVariablePositions();
+
         $this->SetBuffer('ConfigurationOK', '1');
 
         $states = [];
@@ -694,27 +879,14 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->WriteAttributeInteger('RegisteredPanicVariableID', $panicVariableID);
         }
 
-        $summary = count($sensorMap) . ' GUS';
-        if ($acknowledgeMap !== []) {
-            $summary .= ' · Panik ' . count($acknowledgeMap) . ' Lichter';
-        }
-        if ($panicVariableID > 0) {
-            $summary .= ' · Gruppenstatus';
-        }
-        if ((bool) ($notificationConfig['pushEnabled'] ?? false)) {
-            $summary .= ' · Push';
-        }
-        $mailCount = count((array) ($notificationConfig['emailRecipients'] ?? []));
-        if ((bool) ($notificationConfig['emailEnabled'] ?? false) && $mailCount > 0) {
-            $summary .= ' · Mail ' . $mailCount;
-        }
-        if ($notificationWarnings !== []) {
-            $summary .= ' · Hinweis Benachr.';
-        }
-        $this->SetSummary($summary);
+        $this->RefreshSummary();
 
         $session = $this->ReadSession('CurrentSession');
         $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
+
+        if ($sessionState !== self::SESSION_ACTIVE) {
+            $this->ClearTVOwnership();
+        }
 
         if ($sessionState === self::SESSION_ACTIVE) {
             if (!(bool) $this->GetValue('Arm')) {
@@ -738,7 +910,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetValue('AlarmActive', false);
             $this->WriteAttributeBoolean('ArmedReady', false);
             $this->SetAlarmControlsVisible(false);
-            if ($this->AreAllSensorsClear($states)) {
+            if ($this->AreAllMonitoredSensorsClear($states)) {
                 if ($this->ReadAttributeInteger('RearmNotBefore') <= 0) {
                     $this->WriteAttributeInteger(
                         'RearmNotBefore',
@@ -765,6 +937,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $sessionID = (string) ($session['id'] ?? '');
             if ($sessionID !== '') {
                 $this->SetPanicForSession($sessionID, true, 'restart');
+                $this->StartTVForAlarm($sessionID);
             }
         }
 
@@ -830,16 +1003,19 @@ class LCNAlarmanlage extends IPSModuleStrict
 
             $session = $this->ReadSession('CurrentSession');
             $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
+            $watched = $this->IsSensorWatchEnabled($VariableID);
 
             if ($sessionState !== self::SESSION_NONE) {
-                $this->AppendSessionEvent($session, $VariableID, $newValue ? 'motion' : 'clear');
-                $this->WriteSession('CurrentSession', $session);
+                if ($watched) {
+                    $this->AppendSessionEvent($session, $VariableID, $newValue ? 'motion' : 'clear');
+                    $this->WriteSession('CurrentSession', $session);
+                }
 
                 if ($sessionState === self::SESSION_REARM_WAIT) {
                     if ($newValue) {
                         $this->WriteAttributeInteger('RearmNotBefore', 0);
                         $cancelRearm = true;
-                    } elseif ($this->AreAllSensorsClear($states)) {
+                    } elseif ($this->AreAllMonitoredSensorsClear($states)) {
                         $this->WriteAttributeInteger(
                             'RearmNotBefore',
                             time() + max(0, $this->ReadPropertyInteger('RearmDelaySeconds'))
@@ -849,10 +1025,10 @@ class LCNAlarmanlage extends IPSModuleStrict
                 }
             } elseif ((bool) $this->GetValue('Arm')) {
                 if (!(bool) $this->ReadAttributeBoolean('ArmedReady')) {
-                    if (!$newValue && $this->AreAllSensorsClear($states)) {
+                    if ($this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states)) {
                         $this->WriteAttributeBoolean('ArmedReady', true);
                     }
-                } elseif ($newValue) {
+                } elseif ($watched && $newValue) {
                     $session = $this->CreateAlarmSession($VariableID);
                     $this->WriteSession('CurrentSession', $session);
                     $this->WriteAttributeBoolean('ArmedReady', false);
@@ -893,6 +1069,9 @@ class LCNAlarmanlage extends IPSModuleStrict
             // Vor und nach PANIK EIN wird die Session-ID geprüft, damit eine nahezu
             // gleichzeitige Quittierung kein dauerhaftes Licht-EIN hinterlässt.
             if ($alarmSessionID !== '') {
+                // Der direkte Samsung-WakeUp wird zuerst ausgeführt und kann dadurch
+                // weder von Paniklicht noch von Push/SMTP verzögert werden.
+                $this->StartTVForAlarm($alarmSessionID);
                 $this->SetPanicForSession($alarmSessionID, true, 'alarm-start');
                 $this->QueueAlarmNotifications($alarmSessionID);
             }
@@ -1116,7 +1295,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->WriteAttributeBoolean('ArmedReady', false);
 
             $states = $this->ReadSensorStates();
-            if ($this->AreAllSensorsClear($states)) {
+            if ($this->AreAllMonitoredSensorsClear($states)) {
                 $delay = max(0, $this->ReadPropertyInteger('RearmDelaySeconds'));
                 $this->WriteAttributeInteger('RearmNotBefore', time() + $delay);
                 $startRearmTimer = true;
@@ -1136,6 +1315,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ($endedSessionID !== '') {
             $this->SetPanicForSession($endedSessionID, false, 'acknowledged/' . $Source);
+            $this->EndTVForAlarm($endedSessionID, 'acknowledged/' . $Source);
         }
 
         if ($startRearmTimer) {
@@ -1168,6 +1348,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $hideAlarmControls = false;
         $alarmBecameInactive = false;
         $panicOffSessionID = '';
+        $tvOffSessionID = '';
 
         try {
             $this->SetValue('Arm', $Armed);
@@ -1178,6 +1359,7 @@ class LCNAlarmanlage extends IPSModuleStrict
                 $current = $this->ReadSession('CurrentSession');
                 if (($current['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE) {
                     $panicOffSessionID = (string) ($current['id'] ?? '');
+                    $tvOffSessionID = $panicOffSessionID;
                 }
                 $this->WriteAttributeBoolean('ArmedReady', false);
                 $this->WriteAttributeInteger('RearmNotBefore', 0);
@@ -1192,7 +1374,7 @@ class LCNAlarmanlage extends IPSModuleStrict
                 $session = $this->ReadSession('CurrentSession');
                 if ($session === []) {
                     $states = $this->ReadSensorStates();
-                    $this->WriteAttributeBoolean('ArmedReady', $this->AreAllSensorsClear($states));
+                    $this->WriteAttributeBoolean('ArmedReady', $this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states));
                 }
                 // Eine vorhandene aktive/rearm_wait-Session wird niemals durch ein
                 // erneutes EIN überschrieben.
@@ -1219,6 +1401,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         if ($panicOffSessionID !== '') {
             $this->SetPanicForSession($panicOffSessionID, false, 'anlage-aus/' . $Reason);
         }
+        if ($tvOffSessionID !== '') {
+            $this->EndTVForAlarm($tvOffSessionID, 'anlage-aus/' . $Reason);
+        }
 
         $this->RefreshDisplay();
     }
@@ -1233,7 +1418,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $this->SetValue('Arm', true);
         $states = $this->ReadSensorStates();
-        $this->WriteAttributeBoolean('ArmedReady', $this->AreAllSensorsClear($states));
+        $this->WriteAttributeBoolean('ArmedReady', $this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states));
     }
 
     private function ApplyCurrentSchedule(string $Reason): void
@@ -1369,7 +1554,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         if ($currentState === self::SESSION_ACTIVE) {
             $this->SetValue('Status', 'ALARM AUSGELÖST');
         } elseif ($currentState === self::SESSION_REARM_WAIT) {
-            if ($this->AreAllSensorsClear($this->ReadSensorStates())) {
+            if ($this->CountMonitoredSensors() === 0) {
+                $this->SetValue('Status', 'Alarm beendet – keine GUS aktiv');
+            } elseif ($this->AreAllMonitoredSensorsClear($this->ReadSensorStates())) {
                 $notBefore = $this->ReadAttributeInteger('RearmNotBefore');
                 if ($notBefore > 0) {
                     $remaining = max(0, $notBefore - time());
@@ -1382,6 +1569,8 @@ class LCNAlarmanlage extends IPSModuleStrict
             }
         } elseif (!(bool) $this->GetValue('Arm')) {
             $this->SetValue('Status', 'ALARMANLAGE AUS');
+        } elseif ($this->CountMonitoredSensors() === 0) {
+            $this->SetValue('Status', 'ALARMANLAGE EIN – keine GUS aktiv');
         } elseif ($this->ReadAttributeBoolean('ArmedReady')) {
             $this->SetValue('Status', 'ALARMANLAGE SCHARF');
         } else {
@@ -1443,6 +1632,195 @@ class LCNAlarmanlage extends IPSModuleStrict
         $ackID = $this->GetIDForIdent('Acknowledge');
         IPS_SetHidden($alarmID, !$Visible);
         IPS_SetHidden($ackID, !$Visible);
+    }
+
+    private function BuildTVConfig(): array
+    {
+        $warnings = [];
+        $requested = $this->ReadPropertyBoolean('TVEnabled');
+        $instanceID = $this->ReadPropertyInteger('TVInstanceID');
+        $statusVariableID = $this->ReadPropertyInteger('TVStatusVariableID');
+        $enabled = false;
+
+        if ($requested) {
+            if ($instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+                $warnings[] = 'aktiviert, aber keine gueltige SamsungTizen-Instanz ausgewaehlt';
+            } elseif (!in_array($instanceID, IPS_GetInstanceListByModuleID(self::SAMSUNG_TIZEN_MODULE_GUID), true)) {
+                $warnings[] = 'ausgewaehlte TV-Instanz ist keine SamsungTizen-Instanz';
+            } elseif ($statusVariableID <= 0 || !IPS_VariableExists($statusVariableID)) {
+                $warnings[] = 'aktiviert, aber keine gueltige TV-Statusvariable ausgewaehlt';
+            } else {
+                $variable = IPS_GetVariable($statusVariableID);
+                if ((int) $variable['VariableType'] !== VARIABLETYPE_BOOLEAN) {
+                    $warnings[] = 'TV-Statusvariable muss Boolean sein';
+                } elseif (IPS_GetParent($statusVariableID) !== $instanceID) {
+                    $warnings[] = 'TV-Statusvariable gehoert nicht zur ausgewaehlten SamsungTizen-Instanz';
+                } elseif (!function_exists('SamsungTizen_WakeUp') || !function_exists('SamsungTizen_SendKeys')) {
+                    $warnings[] = 'SamsungTizen_WakeUp/SendKeys sind nicht verfuegbar';
+                } else {
+                    $enabled = true;
+                }
+            }
+        }
+
+        return [[
+            'enabled' => $enabled,
+            'instanceID' => $instanceID,
+            'statusVariableID' => $statusVariableID
+        ], $warnings];
+    }
+
+    private function ReadTVConfig(): array
+    {
+        $decoded = json_decode($this->GetBuffer('TVConfig'), true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function TVIsOn(array $Config): bool
+    {
+        $statusVariableID = (int) ($Config['statusVariableID'] ?? 0);
+        if ($statusVariableID <= 0 || !IPS_VariableExists($statusVariableID)) {
+            return false;
+        }
+        try {
+            return (bool) GetValue($statusVariableID);
+        } catch (Throwable $e) {
+            $this->SendDebug('TV', 'Status lesen fehlgeschlagen: ' . $e->getMessage(), 0);
+            return false;
+        }
+    }
+
+    private function StartTVForAlarm(string $SessionID): void
+    {
+        if ($SessionID === '' || !$this->IsActiveSession($SessionID)) {
+            return;
+        }
+
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false)) {
+            return;
+        }
+
+        // Ein eventuell noch laufender AUS-Nachlauf einer alten Session darf die
+        // neue Alarm-Session niemals ausschalten.
+        $this->SetTimerInterval('TVOffCheck', 0);
+        $this->WriteAttributeInteger('TVOffDeadline', 0);
+        $this->WriteAttributeInteger('TVOffFalseChecks', 0);
+
+        $alreadyOwned = $this->ReadAttributeBoolean('TVOwnedByAlarm');
+        $isOn = $this->TVIsOn($config);
+
+        if ($alreadyOwned) {
+            // TV gehoert bereits einem vorherigen Alarm (z.B. neue Session waehrend
+            // eines noch laufenden AUS-Nachlaufs). Ownership wird auf die neue
+            // Session uebertragen. Ist er inzwischen AUS, wird erneut geweckt.
+            $this->WriteAttributeString('TVOwnerSessionID', $SessionID);
+            if ($isOn) {
+                $this->SetTimerInterval('TVWakeRetry', 0);
+                return;
+            }
+        } elseif ($isOn) {
+            // Vor Alarm bereits EIN: niemals nach dem Alarm ausschalten.
+            $this->WriteAttributeBoolean('TVOwnedByAlarm', false);
+            $this->WriteAttributeString('TVOwnerSessionID', $SessionID);
+            $this->WriteAttributeInteger('TVWakeAttempts', 0);
+            $this->WriteAttributeInteger('TVLastWakeAt', 0);
+            $this->SendDebug('TV', 'Bei Alarmstart bereits EIN – bleibt nach Alarm EIN', 0);
+            return;
+        } else {
+            $this->WriteAttributeBoolean('TVOwnedByAlarm', true);
+            $this->WriteAttributeString('TVOwnerSessionID', $SessionID);
+        }
+
+        $this->WriteAttributeInteger('TVWakeAttempts', 1);
+        $this->WriteAttributeInteger('TVLastWakeAt', time());
+        $this->SendTVWakeUp($config, 'alarm-start');
+        $this->SetTimerInterval('TVWakeRetry', 5000);
+    }
+
+    private function EndTVForAlarm(string $SessionID, string $Reason): void
+    {
+        $this->SetTimerInterval('TVWakeRetry', 0);
+
+        if ($SessionID === '') {
+            return;
+        }
+
+        $ownerSessionID = $this->ReadAttributeString('TVOwnerSessionID');
+        if ($ownerSessionID !== $SessionID) {
+            // Ownership wurde bereits auf eine neue Alarm-Session uebertragen oder
+            // der TV war nicht Teil dieser Session.
+            return;
+        }
+
+        if (!$this->ReadAttributeBoolean('TVOwnedByAlarm')) {
+            // TV war bereits vor Alarm EIN. Keine Ausschaltung.
+            $this->WriteAttributeString('TVOwnerSessionID', '');
+            return;
+        }
+
+        $config = $this->ReadTVConfig();
+        if (!(bool) ($config['enabled'] ?? false)) {
+            $this->ClearTVOwnership();
+            return;
+        }
+
+        $this->WriteAttributeInteger('TVOffDeadline', time() + 60);
+        $this->WriteAttributeInteger('TVOffFalseChecks', 0);
+
+        if ($this->TVIsOn($config)) {
+            $this->SendTVPowerOff($config, $Reason);
+        }
+
+        // Auch wenn der TV aktuell noch AUS meldet, 10-s-Nachkontrolle starten:
+        // ein kurz zuvor gesendeter WakeUp darf nicht nach Alarmende spaet hochfahren.
+        $this->SetTimerInterval('TVOffCheck', 10000);
+    }
+
+    private function SendTVWakeUp(array $Config, string $Reason): bool
+    {
+        $instanceID = (int) ($Config['instanceID'] ?? 0);
+        if ($instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+            return false;
+        }
+        try {
+            SamsungTizen_WakeUp($instanceID);
+            $this->SendDebug('TV', 'WakeUp gesendet (' . $Reason . ')', 0);
+            return true;
+        } catch (Throwable $e) {
+            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Samsung WakeUp fehlgeschlagen: ' . $e->getMessage());
+            $this->SendDebug('TV', 'WakeUp fehlgeschlagen: ' . $e->getMessage(), 0);
+            return false;
+        }
+    }
+
+    private function SendTVPowerOff(array $Config, string $Reason): bool
+    {
+        $instanceID = (int) ($Config['instanceID'] ?? 0);
+        if ($instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+            return false;
+        }
+        try {
+            SamsungTizen_SendKeys($instanceID, 'KEY_POWER');
+            $this->SendDebug('TV', 'KEY_POWER AUS gesendet (' . $Reason . ')', 0);
+            return true;
+        } catch (Throwable $e) {
+            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Samsung PowerOff fehlgeschlagen: ' . $e->getMessage());
+            $this->SendDebug('TV', 'PowerOff fehlgeschlagen: ' . $e->getMessage(), 0);
+            return false;
+        }
+    }
+
+    private function ClearTVOwnership(): void
+    {
+        $this->SetTimerInterval('TVWakeRetry', 0);
+        $this->SetTimerInterval('TVOffCheck', 0);
+        $this->WriteAttributeBoolean('TVOwnedByAlarm', false);
+        $this->WriteAttributeString('TVOwnerSessionID', '');
+        $this->WriteAttributeInteger('TVWakeAttempts', 0);
+        $this->WriteAttributeInteger('TVLastWakeAt', 0);
+        $this->WriteAttributeInteger('TVOffDeadline', 0);
+        $this->WriteAttributeInteger('TVOffFalseChecks', 0);
     }
 
     private function BuildNotificationConfig(): array
@@ -1819,18 +2197,200 @@ class LCNAlarmanlage extends IPSModuleStrict
         return is_array($decoded) ? $decoded : [];
     }
 
-    private function AreAllSensorsClear(array $States): bool
+    private function AreAllMonitoredSensorsClear(array $States): bool
     {
-        if ($States === []) {
-            return false;
-        }
-
-        foreach ($States as $state) {
-            if ((bool) $state) {
+        foreach ($this->ReadSensorMap() as $sensor) {
+            $variableID = (int) ($sensor['id'] ?? 0);
+            if ($variableID <= 0 || !$this->IsSensorWatchEnabled($variableID)) {
+                continue;
+            }
+            if ((bool) ($States[(string) $variableID] ?? false)) {
                 return false;
             }
         }
         return true;
+    }
+
+    private function CountMonitoredSensors(): int
+    {
+        $count = 0;
+        foreach ($this->ReadSensorMap() as $sensor) {
+            $variableID = (int) ($sensor['id'] ?? 0);
+            if ($variableID > 0 && $this->IsSensorWatchEnabled($variableID)) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    private function SensorWatchIdent(int $VariableID): string
+    {
+        return 'WatchSensor' . $VariableID;
+    }
+
+    private function IsSensorWatchEnabled(int $VariableID): bool
+    {
+        if ($VariableID <= 0) {
+            return false;
+        }
+        $ident = $this->SensorWatchIdent($VariableID);
+        try {
+            return (bool) $this->GetValue($ident);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    private function EnsureSensorWatchVariables(array $SensorMap): void
+    {
+        $old = json_decode($this->ReadAttributeString('RegisteredWatchSensorIDs'), true);
+        if (!is_array($old)) {
+            $old = [];
+        }
+        $currentIDs = array_map('intval', array_keys($SensorMap));
+
+        foreach ($old as $oldID) {
+            $oldID = (int) $oldID;
+            if ($oldID <= 0 || in_array($oldID, $currentIDs, true)) {
+                continue;
+            }
+            try {
+                $this->UnregisterVariable($this->SensorWatchIdent($oldID));
+            } catch (Throwable $e) {
+                $this->SendDebug('SensorWatch', 'Alter GUS-Schalter konnte nicht entfernt werden: ' . $e->getMessage(), 0);
+            }
+        }
+
+        $position = 60;
+        foreach ($SensorMap as $sensor) {
+            $variableID = (int) ($sensor['id'] ?? 0);
+            $name = (string) ($sensor['name'] ?? ('GUS #' . $variableID));
+            if ($variableID <= 0) {
+                continue;
+            }
+            $ident = $this->SensorWatchIdent($variableID);
+            $created = $this->RegisterVariableBoolean(
+                $ident,
+                $name,
+                ['PRESENTATION' => VARIABLE_PRESENTATION_SWITCH],
+                $position
+            );
+            if ($created) {
+                $this->SetValue($ident, true);
+            }
+            $this->EnableAction($ident);
+            $watchID = $this->GetIDForIdent($ident);
+            IPS_SetName($watchID, $name);
+            IPS_SetPosition($watchID, $position);
+            $position++;
+        }
+
+        $this->WriteAttributeString('RegisteredWatchSensorIDs', $this->Encode($currentIDs));
+    }
+
+    private function SetStaticVariablePositions(): void
+    {
+        $positions = [
+            'AlarmActive' => 200,
+            'Acknowledge' => 210,
+            'FirstTrigger' => 220,
+            'LastMovement' => 230,
+            'MotionCount' => 240,
+            'MotionLog' => 250,
+            'LastAlarm' => 260
+        ];
+        foreach ($positions as $ident => $position) {
+            try {
+                IPS_SetPosition($this->GetIDForIdent($ident), $position);
+            } catch (Throwable $e) {
+            }
+        }
+    }
+
+    private function SetSensorWatchEnabled(int $VariableID, bool $Enabled): void
+    {
+        $map = $this->ReadSensorMap();
+        if (!isset($map[(string) $VariableID])) {
+            throw new Exception('Unbekannter GUS-Schalter.');
+        }
+
+        $ident = $this->SensorWatchIdent($VariableID);
+        if (!$this->AcquireEngineLock()) {
+            $this->ReportLockFailure('SetSensorWatchEnabled #' . $VariableID);
+            throw new Exception('GUS-Ueberwachung konnte wegen einer internen Zugriffskollision nicht geaendert werden.');
+        }
+
+        $scheduleRearm = false;
+        $cancelRearm = false;
+        try {
+            $this->SetValue($ident, $Enabled);
+            $states = $this->ReadSensorStates();
+            $session = $this->ReadSession('CurrentSession');
+            $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
+
+            if ($sessionState === self::SESSION_REARM_WAIT) {
+                if ($this->AreAllMonitoredSensorsClear($states)) {
+                    $this->WriteAttributeInteger(
+                        'RearmNotBefore',
+                        time() + max(0, $this->ReadPropertyInteger('RearmDelaySeconds'))
+                    );
+                    $scheduleRearm = true;
+                } else {
+                    $this->WriteAttributeInteger('RearmNotBefore', 0);
+                    $cancelRearm = true;
+                }
+            } elseif ($sessionState === self::SESSION_NONE && (bool) $this->GetValue('Arm')) {
+                $ready = $this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states);
+                $this->WriteAttributeBoolean('ArmedReady', $ready);
+            }
+        } finally {
+            IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
+
+        if ($cancelRearm) {
+            $this->SetTimerInterval('RearmTimeout', 0);
+            $this->SetTimerInterval('RearmDisplay', 0);
+        }
+        if ($scheduleRearm) {
+            $this->ScheduleRearmFromAttribute();
+        }
+        $this->RefreshSummary();
+        $this->RefreshDisplay();
+    }
+
+    private function RefreshSummary(): void
+    {
+        $sensorMap = $this->ReadSensorMap();
+        $acknowledgeMap = $this->ReadAcknowledgeMap();
+        $notificationConfig = $this->ReadNotificationConfig();
+        $tvConfig = $this->ReadTVConfig();
+
+        $summary = count($sensorMap) . ' GUS · ' . $this->CountMonitoredSensors() . ' aktiv';
+        if ($acknowledgeMap !== []) {
+            $summary .= ' · Panik ' . count($acknowledgeMap) . ' Lichter';
+        }
+        if ($this->PanicGroupVariableID() > 0) {
+            $summary .= ' · Gruppenstatus';
+        }
+        if ((bool) ($notificationConfig['pushEnabled'] ?? false)) {
+            $summary .= ' · Push';
+        }
+        $notificationWarnings = json_decode($this->GetBuffer('NotificationWarnings'), true);
+        if (is_array($notificationWarnings) && $notificationWarnings !== []) {
+            $summary .= ' · Hinweis Benachr.';
+        }
+        $mailCount = count((array) ($notificationConfig['emailRecipients'] ?? []));
+        if ((bool) ($notificationConfig['emailEnabled'] ?? false) && $mailCount > 0) {
+            $summary .= ' · Mail ' . $mailCount;
+        }
+        if ((bool) ($tvConfig['enabled'] ?? false)) {
+            $summary .= ' · TV';
+        }
+        $tvWarnings = json_decode($this->GetBuffer('TVWarnings'), true);
+        if (is_array($tvWarnings) && $tvWarnings !== []) {
+            $summary .= ' · Hinweis TV';
+        }
+        $this->SetSummary($summary);
     }
 
     private function SensorName(int $VariableID): string
