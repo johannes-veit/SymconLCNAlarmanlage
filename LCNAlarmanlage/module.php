@@ -23,6 +23,13 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterPropertyInteger('RearmDelaySeconds', 60);
         $this->RegisterPropertyInteger('PanicGroupVariableID', 0);
         $this->RegisterPropertyString('AcknowledgeLights', '[]');
+        // Neue externe Benachrichtigungen sind nach einem Update bewusst AUS, bis
+        // die zugehörigen Symcon-Instanzen geprüft und explizit aktiviert wurden.
+        $this->RegisterPropertyBoolean('PushEnabled', false);
+        $this->RegisterPropertyInteger('PushVisualizationID', 0);
+        $this->RegisterPropertyBoolean('EmailEnabled', false);
+        $this->RegisterPropertyInteger('SMTPInstanceID', 0);
+        $this->RegisterPropertyString('EmailRecipients', '');
 
         $this->RegisterAttributeInteger('ManualOverride', self::OVERRIDE_NONE);
         $this->RegisterAttributeBoolean('ArmedReady', false);
@@ -165,6 +172,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterTimer('RearmDisplay', 0, 'LCNALARM_RearmDisplay($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ScheduleTimer', 0, 'LCNALARM_ScheduleTimer($_IPS[\'TARGET\']);');
         $this->RegisterTimer('PanicQueue', 0, 'LCNALARM_PanicQueue($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('NotificationQueue', 0, 'LCNALARM_NotificationQueue($_IPS[\'TARGET\']);');
 
         $this->RegisterMessage(0, IPS_KERNELSTARTED);
     }
@@ -179,6 +187,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('RearmDisplay', 0);
         $this->SetTimerInterval('ScheduleTimer', 0);
         $this->SetTimerInterval('PanicQueue', 0);
+        $this->SetTimerInterval('NotificationQueue', 0);
 
         if (IPS_GetKernelRunlevel() !== KR_READY) {
             $this->SetValue('Status', 'INITIALISIERUNG');
@@ -493,6 +502,85 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
     }
 
+    /**
+     * Kurzlebiger Worker für Push/E-Mail. Die Alarm-Engine und Panikbeleuchtung
+     * sind zu diesem Zeitpunkt bereits gesetzt; langsames SMTP blockiert daher
+     * niemals den sicherheitskritischen Zustandswechsel unter der Semaphore.
+     */
+    public function NotificationQueue(): void
+    {
+        $this->SetTimerInterval('NotificationQueue', 0);
+
+        $queue = json_decode($this->GetBuffer('NotificationQueue'), true);
+        if (!is_array($queue) || $queue === []) {
+            $this->SetBuffer('NotificationQueue', '[]');
+            return;
+        }
+
+        $item = array_shift($queue);
+        $this->SetBuffer('NotificationQueue', $this->Encode($queue));
+
+        if (is_array($item)) {
+            $type = (string) ($item['type'] ?? '');
+            $sessionID = (string) ($item['sessionID'] ?? '');
+            $ok = false;
+            $error = '';
+            try {
+                if ($type === 'push') {
+                    $visualizationID = (int) ($item['visualizationID'] ?? 0);
+                    if ($visualizationID <= 0 || !IPS_InstanceExists($visualizationID)) {
+                        throw new Exception('Kachelvisualisierung nicht verfügbar');
+                    }
+                    $result = VISU_PostNotificationEx(
+                        $visualizationID,
+                        (string) ($item['title'] ?? 'ALARM AUSGELÖST!'),
+                        (string) ($item['text'] ?? ''),
+                        'Alert',
+                        'siren',
+                        $this->InstanceID
+                    );
+                    if ($result === false) {
+                        throw new Exception('VISU_PostNotificationEx meldete FALSE');
+                    }
+                    $ok = true;
+                } elseif ($type === 'email') {
+                    $smtpID = (int) ($item['smtpID'] ?? 0);
+                    $recipient = trim((string) ($item['recipient'] ?? ''));
+                    if ($smtpID <= 0 || !IPS_InstanceExists($smtpID)) {
+                        throw new Exception('SMTP-Instanz nicht verfügbar');
+                    }
+                    if (!filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
+                        throw new Exception('ungültige Empfängeradresse');
+                    }
+                    $ok = SMTP_SendMailEx(
+                        $smtpID,
+                        $recipient,
+                        (string) ($item['subject'] ?? 'ALARM ausgelöst!'),
+                        (string) ($item['body'] ?? '')
+                    );
+                    if (!$ok) {
+                        throw new Exception('SMTP_SendMailEx meldete FALSE');
+                    }
+                }
+            } catch (Throwable $e) {
+                $error = $e->getMessage();
+                IPS_LogMessage(
+                    'LCN Alarmanlage #' . $this->InstanceID,
+                    'Benachrichtigung ' . $type . ' fehlgeschlagen: ' . $error
+                );
+                $this->SendDebug('Notification', $type . ': ' . $error, 0);
+            }
+
+            $this->RecordNotificationResult($sessionID, $item, $ok, $error);
+        }
+
+        $queue = json_decode($this->GetBuffer('NotificationQueue'), true);
+        if (is_array($queue) && $queue !== []) {
+            // Kleine lokale Entkopplung; erzeugt keinerlei LCN-Verkehr.
+            $this->SetTimerInterval('NotificationQueue', 100);
+        }
+    }
+
     /** Einmal-Timer für die nächste EIN- oder AUS-Zeitgrenze. */
     public function ScheduleTimer(): void
     {
@@ -514,12 +602,14 @@ class LCNAlarmanlage extends IPSModuleStrict
         // aktualisieren, aber niemals einen historischen Alarm erzeugen.
         $this->SetBuffer('RuntimeReady', '0');
         $this->SetBuffer('PanicQueue', '[]');
+        $this->SetBuffer('NotificationQueue', '[]');
 
         $this->SetTimerInterval('AlarmTimeout', 0);
         $this->SetTimerInterval('RearmTimeout', 0);
         $this->SetTimerInterval('RearmDisplay', 0);
         $this->SetTimerInterval('ScheduleTimer', 0);
         $this->SetTimerInterval('PanicQueue', 0);
+        $this->SetTimerInterval('NotificationQueue', 0);
 
         $this->UnregisterOldSensorMessages();
         $this->UnregisterOldAcknowledgeMessages();
@@ -528,16 +618,24 @@ class LCNAlarmanlage extends IPSModuleStrict
         [$sensorMap, $errors] = $this->BuildSensorMap();
         [$acknowledgeMap, $acknowledgeErrors] = $this->BuildAcknowledgeMap($sensorMap);
         [$panicVariableID, $panicErrors] = $this->BuildPanicConfig();
+        [$notificationConfig, $notificationWarnings] = $this->BuildNotificationConfig();
         $errors = array_merge($errors, $acknowledgeErrors, $panicErrors);
 
         $this->SetBuffer('SensorMap', $this->Encode($sensorMap));
         $this->SetBuffer('AcknowledgeMap', $this->Encode($acknowledgeMap));
         $this->SetBuffer('PanicGroupVariableID', (string) $panicVariableID);
+        $this->SetBuffer('NotificationConfig', $this->Encode($notificationConfig));
+
+        foreach ($notificationWarnings as $warning) {
+            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Benachrichtigung: ' . $warning);
+            $this->SendDebug('NotificationConfig', $warning, 0);
+        }
 
         if ($errors !== []) {
             $this->SetBuffer('ConfigurationOK', '0');
             $this->SetTimerInterval('ScheduleTimer', 0);
             $this->SetTimerInterval('PanicQueue', 0);
+            $this->SetTimerInterval('NotificationQueue', 0);
             $this->SetSummary('Konfigurationsfehler');
             try {
                 $this->SetArmedInternal(false, 'configuration-error');
@@ -555,6 +653,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetBuffer('ConfigurationOK', '0');
             $this->SetTimerInterval('ScheduleTimer', 0);
             $this->SetTimerInterval('PanicQueue', 0);
+            $this->SetTimerInterval('NotificationQueue', 0);
             $this->SetSummary('Keine GUS');
             try {
                 $this->SetArmedInternal(false, 'no-sensors');
@@ -601,6 +700,16 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
         if ($panicVariableID > 0) {
             $summary .= ' · Gruppenstatus';
+        }
+        if ((bool) ($notificationConfig['pushEnabled'] ?? false)) {
+            $summary .= ' · Push';
+        }
+        $mailCount = count((array) ($notificationConfig['emailRecipients'] ?? []));
+        if ((bool) ($notificationConfig['emailEnabled'] ?? false) && $mailCount > 0) {
+            $summary .= ' · Mail ' . $mailCount;
+        }
+        if ($notificationWarnings !== []) {
+            $summary .= ' · Hinweis Benachr.';
         }
         $this->SetSummary($summary);
 
@@ -785,6 +894,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             // gleichzeitige Quittierung kein dauerhaftes Licht-EIN hinterlässt.
             if ($alarmSessionID !== '') {
                 $this->SetPanicForSession($alarmSessionID, true, 'alarm-start');
+                $this->QueueAlarmNotifications($alarmSessionID);
             }
             $this->SendDebug('ALARM', 'Neue Alarm-Session durch Variable #' . $VariableID, 0);
         }
@@ -945,6 +1055,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetBuffer('RuntimeReady', '0');
         $this->SetTimerInterval('ScheduleTimer', 0);
         $this->SetTimerInterval('PanicQueue', 0);
+        $this->SetTimerInterval('NotificationQueue', 0);
+        $this->SetBuffer('NotificationQueue', '[]');
         $this->WriteAttributeInteger('ManualOverride', self::OVERRIDE_OFF);
 
         try {
@@ -1196,6 +1308,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             'endReason' => '',
             'firstSensorID' => $VariableID,
             'firstSensorName' => $sensorName,
+            'notifications' => [],
             'events' => [
                 [
                     'seq' => 1,
@@ -1330,6 +1443,162 @@ class LCNAlarmanlage extends IPSModuleStrict
         $ackID = $this->GetIDForIdent('Acknowledge');
         IPS_SetHidden($alarmID, !$Visible);
         IPS_SetHidden($ackID, !$Visible);
+    }
+
+    private function BuildNotificationConfig(): array
+    {
+        $warnings = [];
+        $pushRequested = $this->ReadPropertyBoolean('PushEnabled');
+        $pushVisualizationID = $this->ReadPropertyInteger('PushVisualizationID');
+        $pushEnabled = false;
+        if ($pushRequested) {
+            if ($pushVisualizationID <= 0 || !IPS_InstanceExists($pushVisualizationID)) {
+                $warnings[] = 'Push aktiviert, aber keine gültige Kachelvisualisierung ausgewählt';
+            } else {
+                $pushEnabled = true;
+            }
+        }
+
+        $emailRequested = $this->ReadPropertyBoolean('EmailEnabled');
+        $smtpID = $this->ReadPropertyInteger('SMTPInstanceID');
+        $recipients = $this->ParseEmailRecipients($this->ReadPropertyString('EmailRecipients'));
+        $emailEnabled = false;
+        if ($emailRequested) {
+            if ($smtpID <= 0 || !IPS_InstanceExists($smtpID)) {
+                $warnings[] = 'E-Mail aktiviert, aber keine gültige SMTP-Instanz ausgewählt';
+            } elseif ($recipients === []) {
+                $warnings[] = 'E-Mail aktiviert, aber keine gültige Empfängeradresse vorhanden';
+            } else {
+                $emailEnabled = true;
+            }
+        }
+
+        return [[
+            'pushEnabled' => $pushEnabled,
+            'pushVisualizationID' => $pushVisualizationID,
+            'emailEnabled' => $emailEnabled,
+            'smtpID' => $smtpID,
+            'emailRecipients' => $recipients
+        ], $warnings];
+    }
+
+    private function ParseEmailRecipients(string $Raw): array
+    {
+        $parts = preg_split('/[;,\r\n]+/', $Raw) ?: [];
+        $result = [];
+        foreach ($parts as $part) {
+            $mail = trim((string) $part);
+            if ($mail === '' || !filter_var($mail, FILTER_VALIDATE_EMAIL)) {
+                continue;
+            }
+            $key = strtolower($mail);
+            $result[$key] = $mail;
+        }
+        return array_values($result);
+    }
+
+    private function ReadNotificationConfig(): array
+    {
+        $decoded = json_decode($this->GetBuffer('NotificationConfig'), true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function QueueAlarmNotifications(string $SessionID): void
+    {
+        if ($SessionID === '') {
+            return;
+        }
+
+        $session = $this->ReadSession('CurrentSession');
+        if ((string) ($session['id'] ?? '') !== $SessionID) {
+            return;
+        }
+
+        $config = $this->ReadNotificationConfig();
+        $queue = [];
+        $sensorName = (string) ($session['firstSensorName'] ?? '-');
+        $startedAt = (float) ($session['startedAt'] ?? microtime(true));
+        $time = $this->FormatTimestamp($startedAt);
+
+        if ((bool) ($config['pushEnabled'] ?? false)) {
+            $queue[] = [
+                'type' => 'push',
+                'sessionID' => $SessionID,
+                'visualizationID' => (int) ($config['pushVisualizationID'] ?? 0),
+                'title' => 'ALARM AUSGELÖST!',
+                'text' => 'Bewegung: ' . $sensorName . ' · ' . $time
+            ];
+        }
+
+        if ((bool) ($config['emailEnabled'] ?? false)) {
+            $subject = 'ALARM ausgelöst!';
+            $body = "ALARM ausgelöst!\n\n"
+                . 'Zeit: ' . $time . "\n"
+                . 'Erstauslöser: ' . $sensorName . "\n"
+                . 'Alarm-ID: ' . $SessionID . "\n\n"
+                . 'Die Alarmanlage bleibt scharf. Zum Quittieren die Symcon-App öffnen.';
+            foreach ((array) ($config['emailRecipients'] ?? []) as $recipient) {
+                $queue[] = [
+                    'type' => 'email',
+                    'sessionID' => $SessionID,
+                    'smtpID' => (int) ($config['smtpID'] ?? 0),
+                    'recipient' => (string) $recipient,
+                    'subject' => $subject,
+                    'body' => $body
+                ];
+            }
+        }
+
+        if ($queue === []) {
+            return;
+        }
+
+        // Pro Session wird diese Warteschlange nur beim ersten Alarmtrigger erzeugt.
+        // Sie ist kurzlebig und wird nach einem Neustart NICHT rekonstruiert, damit
+        // ein bereits versendeter Alarm nicht doppelt zugestellt wird.
+        $this->SetBuffer('NotificationQueue', $this->Encode($queue));
+        $this->SetTimerInterval('NotificationQueue', 1);
+    }
+
+    private function RecordNotificationResult(string $SessionID, array $Item, bool $Success, string $Error): void
+    {
+        if ($SessionID === '') {
+            return;
+        }
+
+        if (!$this->AcquireEngineLock()) {
+            // Benachrichtigungs-Metadaten sind nicht sicherheitskritisch. Ein
+            // gescheiterter Logeintrag darf den sichtbaren Alarmstatus niemals
+            // auf STÖRUNG setzen oder die Alarm-Engine beeinflussen.
+            IPS_LogMessage(
+                'LCN Alarmanlage #' . $this->InstanceID,
+                'Benachrichtigungsergebnis konnte wegen Semaphore-Kollision nicht gespeichert werden'
+            );
+            return;
+        }
+
+        try {
+            foreach (['CurrentSession', 'LastSession'] as $attribute) {
+                $session = $this->ReadSession($attribute);
+                if ((string) ($session['id'] ?? '') !== $SessionID) {
+                    continue;
+                }
+                if (!isset($session['notifications']) || !is_array($session['notifications'])) {
+                    $session['notifications'] = [];
+                }
+                $session['notifications'][] = [
+                    'ts' => microtime(true),
+                    'type' => (string) ($Item['type'] ?? ''),
+                    'recipient' => (string) ($Item['recipient'] ?? ''),
+                    'success' => $Success,
+                    'error' => $Error
+                ];
+                $this->WriteSession($attribute, $session);
+                break;
+            }
+        } finally {
+            IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
     }
 
     private function BuildSensorMap(): array

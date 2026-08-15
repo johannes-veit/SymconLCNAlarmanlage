@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.4
+
+- stabiler Alarmkern 0.1.3 unverändert fortgeführt
+- optionale Push-Nachricht über eine explizit ausgewählte Kachelvisualisierung
+- Push-Titel `ALARM AUSGELÖST!`, Sirenenton und direkter Sprung zur Alarmanlagen-Kachel
+- optionale E-Mail über eine explizit ausgewählte SMTP-Instanz
+- mehrere Empfänger per Semikolon, Komma oder Zeilenumbruch; jede Adresse wird einzeln mit `SMTP_SendMailEx()` bedient
+- Push und E-Mail werden pro Alarm-Session ausschließlich beim ersten GUS-Trigger eingeplant
+- Benachrichtigungen laufen außerhalb der Alarm-Engine-Semaphore in einer kurzen lokalen Warteschlange; langsames SMTP kann den Alarmkern nicht blockieren
+- nach Kernel-/Modulneustart wird eine verlorene Benachrichtigungswarteschlange bewusst nicht rekonstruiert, damit ein bereits versendeter Alarm nicht doppelt zugestellt wird
+- Push/E-Mail sind nach dem Update standardmäßig AUS und müssen nach Auswahl der Symcon-Instanzen explizit aktiviert werden
+- Benachrichtigungsfehler legen den Alarmkern nicht still, sondern werden protokolliert
+- persönliche E-Mail-Adressen werden nicht im Repository hinterlegt, sondern ausschließlich in der lokalen Instanzkonfiguration gespeichert
+- GUIDs, Prefix, bestehende Properties und Variablen-Idents bleiben unverändert
+
 ## 0.1.3
 
 - Korrigiert die Panik-Ansteuerung aus 0.1.2: Die sichtbare Integer-Statusvariable von `LCNLightGroup` ist eine read-only Rückmeldung und besitzt keine VariableAction.
