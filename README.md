@@ -1,8 +1,8 @@
 # LCN Alarmanlage für IP-Symcon 9
 
-## Version 0.1.8
+## Version 0.1.9
 
-Version 0.1.8 basiert weiterhin **direkt auf der real getesteten stabilen Version 0.1.4**. Die TV-Erweiterung aus 0.1.7 wurde nochmals abgesichert. Zusätzlich erhält jeder konfigurierte GUS einen eigenen persistenten EIN/AUS-Schalter in der normalen Symcon-Visualisierung.
+Version 0.1.9 baut auf dem funktional getesteten Stand 0.1.8 auf. Die Alarmdauer arbeitet jetzt als **Nachlaufzeit nach der letzten Bewegung**. Zusätzlich wird die Instanz in der Kachelvisualisierung kompakter über das offizielle HTML-SDK dargestellt; die nativen Statusvariablen und Aktionen bleiben als Fallback erhalten.
 
 ### Alarmquellen
 
@@ -64,3 +64,24 @@ Die TV-Helfer besitzen **keinen Pfad**, der `Arm`, `AlarmActive`, `CurrentSessio
 - alle bestehenden 0.1.4-Properties und Variablen-Idents bleiben erhalten
 - neue TV-Properties haben neutrale Defaults; ein Update allein sendet keinen TV-Befehl
 - keine Hardwareaktion allein durch `ApplyChanges()`
+
+## Alarm-Nachlauf 0.1.9
+
+Die Eigenschaft `AlarmDurationSeconds` bleibt aus Update-Kompatibilitätsgründen unverändert, hat aber ab 0.1.9 die Bedeutung **Nachlaufzeit nach letzter Bewegung**:
+
+1. Alarm startet sofort mit Panik, TV und Benachrichtigungen.
+2. Solange mindestens ein aktiv überwachter GUS Bewegung meldet, läuft **kein** Alarm-Endtimer.
+3. Sobald alle aktiv überwachten GUS frei sind, startet die konfigurierte Nachlaufzeit.
+4. Neue Bewegung bricht den Nachlauf ab.
+5. Erst nach erneut vollständig freiem Melderfeld startet die volle Nachlaufzeit neu.
+6. Nach Ablauf werden Panik und ein vom Alarm gestarteter TV beendet; danach folgt die getrennte Wieder-scharf-Verzögerung.
+
+## Kompakte Kachel
+
+Die HTML-SDK-Kachel zeigt die kritischen Bedienelemente direkt und fasst Detailinformationen platzsparend zusammen:
+
+- **Überwachte Räume**: einklappbar, je GUS Raumname + EIN/AUS-Schalter.
+- **Protokoll**: einklappbar mit Erstauslöser, letzter Bewegung, Bewegungsanzahl und letztem Alarm.
+- **Historie**: chronologische Bewegungen des aktuellen bzw. letzten Alarms mit Name und Zeitstempel in einem scrollbar begrenzten Bereich.
+
+Die ursprünglichen Modulvariablen werden nicht entfernt und bleiben in der Listen-/Fallbackdarstellung verfügbar.

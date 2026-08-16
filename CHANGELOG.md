@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.9
+
+- **Alarmdauer ist jetzt Nachlaufzeit:** kein Alarm-Endtimer mehr ab dem ersten Trigger.
+- Die Nachlaufzeit beginnt erst, wenn alle aktuell überwachten GUS `AUS/frei` melden.
+- Jede neue Bewegung während des Nachlaufs bricht ihn sofort ab; bei erneut vollständig freiem Melderfeld startet die volle Nachlaufzeit neu.
+- Gleichzeitige und wechselnde GUS bleiben vollständig kollisionsgeschützt und werden weiter chronologisch protokolliert.
+- Neustart/ApplyChanges rekonstruiert eine bereits laufende Nachlauf-Deadline persistent; bei aktiver Bewegung gibt es keinen Alarm-Endtimer.
+- Kompakte Kachel via offiziellem Symcon HTML-SDK: **Überwachte Räume** und **Protokoll** sind einklappbar.
+- Unter **Überwachte Räume** stehen die konfigurierten GUS mit eigenem EIN/AUS-Schalter; die vorhandenen nativen Schalter bleiben als Fallback erhalten.
+- **Protokoll** enthält Erstauslöser, letzte Bewegung, Anzahl Bewegungen und letzten Alarm.
+- **Historie** zeigt die Bewegungsereignisse des aktuellen/letzten Alarms chronologisch in einem begrenzten, scrollbareren Bereich.
+- Der Alarm-Nachlauf wird in der Kachel lokal sekundengenau als `Nachlauf noch ... s` angezeigt, ohne zusätzlichen LCN-Traffic.
+- Samsung-, Panik-, Push-, E-Mail-, Automatik- und Quittierungslogik aus 0.1.8 bleiben funktional unverändert.
+
 ## 0.1.8
 
 - v0.1.7 nochmals geprüft und TV-Pfad weiter abgesichert; Grundlage bleibt der stabile 0.1.4-Alarmkern

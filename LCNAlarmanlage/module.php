@@ -44,6 +44,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterAttributeString('LastSession', '{}');
         $this->RegisterAttributeInteger('SessionCounter', 0);
         $this->RegisterAttributeInteger('RearmNotBefore', 0);
+        // Persistente Nachlauf-Deadline: startet erst, wenn alle aktuell überwachten
+        // GUS frei sind. Jede neue Bewegung verwirft die Deadline vollständig.
+        $this->RegisterAttributeInteger('AlarmQuietNotBefore', 0);
         $this->RegisterAttributeString('RegisteredSensorIDs', '[]');
         $this->RegisterAttributeString('RegisteredWatchSensorIDs', '[]');
         $this->RegisterAttributeString('RegisteredAcknowledgeIDs', '[]');
@@ -192,6 +195,10 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterTimer('TVWakeRetry', 0, 'LCNALARM_TVWakeRetry($_IPS[\'TARGET\']);');
         $this->RegisterTimer('TVOffCheck', 0, 'LCNALARM_TVOffCheck($_IPS[\'TARGET\']);');
 
+        // Kompakte, interaktive Kachel via offiziellem HTML-SDK. Die nativen
+        // Statusvariablen bleiben als Fallback/Listenansicht vollständig erhalten.
+        $this->SetVisualizationType(1);
+
         $this->RegisterMessage(0, IPS_KERNELSTARTED);
     }
 
@@ -256,6 +263,26 @@ class LCNAlarmanlage extends IPSModuleStrict
         unset($element);
 
         return json_encode($form, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
+    }
+
+    public function GetVisualizationTile(): string
+    {
+        $path = __DIR__ . '/module.html';
+        $html = @file_get_contents($path);
+        if (!is_string($html)) {
+            return '<div style="padding:12px">Visualisierung konnte nicht geladen werden.</div>';
+        }
+
+        $state = $this->BuildVisualizationState();
+        $json = json_encode(
+            $state,
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+        );
+        if ($json === false) {
+            $json = '{}';
+        }
+
+        return str_replace('__INITIAL_STATE__', $json, $html);
     }
 
     public function MessageSink(int $TimeStamp, int $SenderID, int $Message, array $Data): void
@@ -338,6 +365,10 @@ class LCNAlarmanlage extends IPSModuleStrict
             default:
                 throw new Exception('Ungültige Aktion: ' . $Ident);
         }
+
+        // Wichtig insbesondere für reine Eingabewerte (Scharf/Unscharf ab):
+        // die HTML-SDK-Kachel erhält den bestätigten Modulzustand zurück.
+        $this->PushVisualizationState();
     }
 
     /** Externe, dokumentierte Bedienfunktion für spätere Quittierungswege. */
@@ -358,7 +389,10 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->AcknowledgeAlarmInternal('symcon');
     }
 
-    /** Einmal-Timer: beendet die aktive Alarmsignalisierung. */
+    /**
+     * Nachlauf-Timer der aktiven Alarm-Session. Er darf erst ablaufen, nachdem alle
+     * aktuell überwachten GUS frei sind. Jede neue Bewegung hebt die Deadline auf.
+     */
     public function AlarmTimeout(): void
     {
         $this->SetTimerInterval('AlarmTimeout', 0);
@@ -370,40 +404,67 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $startRearmTimer = false;
         $endedSessionID = '';
+        $rescheduleMs = 0;
         try {
             $session = $this->ReadSession('CurrentSession');
             if (($session['state'] ?? self::SESSION_NONE) !== self::SESSION_ACTIVE) {
+                $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
                 return;
             }
 
-            $endedSessionID = (string) ($session['id'] ?? '');
-            $session['state'] = self::SESSION_REARM_WAIT;
-            $session['signalEndedAt'] = microtime(true);
-            $session['pendingEndReason'] = 'automatic-timeout';
-            $this->WriteSession('CurrentSession', $session);
-            $this->WriteAttributeBoolean('ArmedReady', false);
-
             $states = $this->ReadSensorStates();
-            if ($this->AreAllMonitoredSensorsClear($states)) {
+            if (!$this->AreAllMonitoredSensorsClear($states)) {
+                // Sicherheitsnetz gegen Timer-/Sensor-Rennen: bei Bewegung darf ein
+                // abgelaufener Nachlauf niemals die aktive Signalisierung beenden.
+                $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
+                return;
+            }
+
+            $deadline = $this->ReadAttributeInteger('AlarmQuietNotBefore');
+            if ($deadline <= 0) {
+                $deadline = time() + max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
+                $this->WriteAttributeInteger('AlarmQuietNotBefore', $deadline);
+            }
+
+            $remaining = $deadline - time();
+            if ($remaining > 0) {
+                // Timer können systembedingt minimal zu früh eintreffen.
+                $rescheduleMs = max(1, $remaining * 1000);
+            } else {
+                $endedSessionID = (string) ($session['id'] ?? '');
+                $session['state'] = self::SESSION_REARM_WAIT;
+                $session['signalEndedAt'] = microtime(true);
+                $session['pendingEndReason'] = 'automatic-afterrun';
+                $this->WriteSession('CurrentSession', $session);
+                $this->WriteAttributeBoolean('ArmedReady', false);
+                $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
+
                 $delay = max(0, $this->ReadPropertyInteger('RearmDelaySeconds'));
                 $notBefore = time() + $delay;
                 $this->WriteAttributeInteger('RearmNotBefore', $notBefore);
                 $startRearmTimer = true;
-            } else {
-                $this->WriteAttributeInteger('RearmNotBefore', 0);
             }
         } finally {
             IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
+
+        if ($rescheduleMs > 0) {
+            $this->SetTimerInterval('AlarmTimeout', $rescheduleMs);
+            $this->RefreshDisplay();
+            return;
+        }
+
+        if ($endedSessionID === '') {
+            $this->RefreshDisplay();
+            return;
         }
 
         $this->SetValue('AlarmActive', false);
         $this->SetAlarmControlsVisible(false);
         $this->SetTimerInterval('RearmDisplay', 0);
 
-        if ($endedSessionID !== '') {
-            $this->SetPanicForSession($endedSessionID, false, 'automatic-timeout');
-            $this->EndTVForAlarm($endedSessionID, 'automatic-timeout');
-        }
+        $this->SetPanicForSession($endedSessionID, false, 'automatic-afterrun');
+        $this->EndTVForAlarm($endedSessionID, 'automatic-afterrun');
 
         if ($startRearmTimer) {
             $this->ScheduleRearmFromAttribute();
@@ -827,6 +888,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetValue('AlarmActive', false);
             $this->SetAlarmControlsVisible(false);
             $this->SetValue('Status', 'STÖRUNG – ' . implode('; ', $errors));
+            $this->PushVisualizationState();
             $this->SendDebug('Configuration', implode(' | ', $errors), 0);
             return;
         }
@@ -845,6 +907,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetValue('AlarmActive', false);
             $this->SetAlarmControlsVisible(false);
             $this->SetValue('Status', 'KONFIGURATION – keine GUS ausgewählt');
+            $this->PushVisualizationState();
             return;
         }
 
@@ -897,13 +960,24 @@ class LCNAlarmanlage extends IPSModuleStrict
                 $this->SetValue('AlarmActive', true);
                 $this->WriteAttributeBoolean('ArmedReady', false);
                 $this->SetAlarmControlsVisible(true);
-                $duration = max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
-                $startedAt = (float) ($session['startedAt'] ?? microtime(true));
-                $remainingMs = (int) round((($startedAt + $duration) - microtime(true)) * 1000);
-                if ($remainingMs <= 0) {
-                    $this->AlarmTimeout();
+                // Alarmdauer ist eine Nachlaufzeit ab dem Zeitpunkt, an dem alle
+                // überwachten GUS frei sind. Bei noch aktiver Bewegung gibt es keinen
+                // Alarm-Endtimer. Eine bereits persistierte Deadline wird fortgeführt.
+                if ($this->AreAllMonitoredSensorsClear($states)) {
+                    $deadline = $this->ReadAttributeInteger('AlarmQuietNotBefore');
+                    if ($deadline <= 0) {
+                        $deadline = time() + max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
+                        $this->WriteAttributeInteger('AlarmQuietNotBefore', $deadline);
+                    }
+                    $remainingMs = max(1, ($deadline - time()) * 1000);
+                    if ($deadline <= time()) {
+                        $this->AlarmTimeout();
+                    } else {
+                        $this->SetTimerInterval('AlarmTimeout', $remainingMs);
+                    }
                 } else {
-                    $this->SetTimerInterval('AlarmTimeout', max(1, $remainingMs));
+                    $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
+                    $this->SetTimerInterval('AlarmTimeout', 0);
                 }
             }
         } elseif ($sessionState === self::SESSION_REARM_WAIT) {
@@ -929,6 +1003,12 @@ class LCNAlarmanlage extends IPSModuleStrict
                 $this->ApplyDesiredArmState((bool) $this->GetValue('Arm'));
             }
         }
+
+        // Ein während der Rekonstruktion eventuell abgelaufener Nachlauf kann die
+        // Session bereits beendet haben. Deshalb den Zustand vor externen Aktionen
+        // nochmals frisch lesen und niemals mit einem veralteten ACTIVE-Snapshot arbeiten.
+        $session = $this->ReadSession('CurrentSession');
+        $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
 
         // Bei einem Neustart während einer noch aktiven Alarm-Session werden die
         // konfigurierten Paniklichter deterministisch erneut auf EIN angefordert.
@@ -972,6 +1052,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         $alarmSessionID = '';
         $scheduleRearm = false;
         $cancelRearm = false;
+        $scheduleAlarmAfterrun = false;
+        $cancelAlarmAfterrun = false;
+        $alarmAfterrunMs = 0;
         $changed = false;
 
         try {
@@ -1011,7 +1094,23 @@ class LCNAlarmanlage extends IPSModuleStrict
                     $this->WriteSession('CurrentSession', $session);
                 }
 
-                if ($sessionState === self::SESSION_REARM_WAIT) {
+                if ($sessionState === self::SESSION_ACTIVE && $watched) {
+                    if ($newValue) {
+                        // Jede neue Bewegung hebt den laufenden Nachlauf sofort auf.
+                        $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
+                        $cancelAlarmAfterrun = true;
+                    } elseif ($this->AreAllMonitoredSensorsClear($states)) {
+                        // Erst wenn wirklich alle aktuell überwachten Räume frei sind,
+                        // beginnt die volle Nachlaufzeit von vorn.
+                        $duration = max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
+                        $deadline = time() + $duration;
+                        $this->WriteAttributeInteger('AlarmQuietNotBefore', $deadline);
+                        $alarmAfterrunMs = $duration * 1000;
+                        $scheduleAlarmAfterrun = true;
+                    }
+                }
+
+                if ($sessionState === self::SESSION_REARM_WAIT && $watched) {
                     if ($newValue) {
                         $this->WriteAttributeInteger('RearmNotBefore', 0);
                         $cancelRearm = true;
@@ -1041,8 +1140,10 @@ class LCNAlarmanlage extends IPSModuleStrict
                     $this->SetValue('AlarmActive', true);
                     $this->SetValue('Acknowledge', false);
                     $this->SetAlarmControlsVisible(true);
-                    $duration = max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
-                    $this->SetTimerInterval('AlarmTimeout', $duration * 1000);
+                    // Kein fester Timer ab Alarmstart. Die Nachlaufzeit beginnt erst,
+                    // wenn alle überwachten GUS wieder frei melden.
+                    $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
+                    $this->SetTimerInterval('AlarmTimeout', 0);
                     $firstAlarmTrigger = true;
                     $alarmSessionID = (string) ($session['id'] ?? '');
                 }
@@ -1053,6 +1154,13 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if (!$changed) {
             return;
+        }
+
+        if ($cancelAlarmAfterrun) {
+            $this->SetTimerInterval('AlarmTimeout', 0);
+        }
+        if ($scheduleAlarmAfterrun) {
+            $this->SetTimerInterval('AlarmTimeout', max(1, $alarmAfterrunMs));
         }
 
         if ($cancelRearm) {
@@ -1251,6 +1359,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetAlarmControlsVisible(false);
         $this->SetSummary('Sensorstörung');
         $this->SetValue('Status', 'STÖRUNG – Bewegungsmelder nicht verfügbar (#' . $VariableID . ')');
+        $this->PushVisualizationState();
         IPS_LogMessage(
             'LCN Alarmanlage #' . $this->InstanceID,
             'Konfigurierter Bewegungsmelder ist nicht mehr verfügbar: #' . $VariableID
@@ -1293,6 +1402,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $session['pendingEndReason'] = 'acknowledged';
             $this->WriteSession('CurrentSession', $session);
             $this->WriteAttributeBoolean('ArmedReady', false);
+            $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
 
             $states = $this->ReadSensorStates();
             if ($this->AreAllMonitoredSensorsClear($states)) {
@@ -1363,6 +1473,7 @@ class LCNAlarmanlage extends IPSModuleStrict
                 }
                 $this->WriteAttributeBoolean('ArmedReady', false);
                 $this->WriteAttributeInteger('RearmNotBefore', 0);
+                $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
                 $this->FinalizeCurrentSession($Reason);
 
                 $stopAlarmTimer = true;
@@ -1538,6 +1649,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->WriteSession('LastSession', $session);
         $this->WriteSession('CurrentSession', []);
         $this->WriteAttributeInteger('RearmNotBefore', 0);
+        $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
     }
 
     private function RefreshDisplay(): void
@@ -1582,6 +1694,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetValue('LastMovement', '-');
             $this->SetValue('MotionCount', 0);
             $this->SetValue('MotionLog', '-');
+            $this->PushVisualizationState();
             return;
         }
 
@@ -1623,6 +1736,71 @@ class LCNAlarmanlage extends IPSModuleStrict
                 'LastAlarm',
                 (string) ($last['id'] ?? '-') . (($endedAt > 0) ? ' – ' . $this->FormatTimestamp($endedAt) : '') . (($reason !== '') ? ' – ' . $reason : '')
             );
+        }
+
+        $this->PushVisualizationState();
+    }
+
+    private function BuildVisualizationState(): array
+    {
+        $sensors = [];
+        $states = $this->ReadSensorStates();
+        foreach ($this->ReadSensorMap() as $sensor) {
+            $variableID = (int) ($sensor['id'] ?? 0);
+            if ($variableID <= 0) {
+                continue;
+            }
+            $sensors[] = [
+                'id' => $variableID,
+                'ident' => $this->SensorWatchIdent($variableID),
+                'name' => (string) ($sensor['name'] ?? ('GUS #' . $variableID)),
+                'enabled' => $this->IsSensorWatchEnabled($variableID),
+                'motion' => (bool) ($states[(string) $variableID] ?? false)
+            ];
+        }
+
+        $current = $this->ReadSession('CurrentSession');
+        $last = $this->ReadSession('LastSession');
+        $historySession = ($current !== []) ? $current : $last;
+        $history = [];
+        $events = (isset($historySession['events']) && is_array($historySession['events'])) ? $historySession['events'] : [];
+        foreach ($events as $event) {
+            if (!is_array($event) || (string) ($event['event'] ?? '') !== 'motion') {
+                continue;
+            }
+            $history[] = [
+                'seq' => (int) ($event['seq'] ?? 0),
+                'name' => (string) ($event['sensor'] ?? '-'),
+                'time' => $this->FormatTimestamp((float) ($event['ts'] ?? 0))
+            ];
+        }
+
+        return [
+            'arm' => (bool) $this->GetValue('Arm'),
+            'status' => (string) $this->GetValue('Status'),
+            'automatic' => (bool) $this->GetValue('Automatic'),
+            'autoFrom' => (string) $this->GetValue('AutoFrom'),
+            'autoTo' => (string) $this->GetValue('AutoTo'),
+            'alarmActive' => (bool) $this->GetValue('AlarmActive'),
+            'firstTrigger' => (string) $this->GetValue('FirstTrigger'),
+            'lastMovement' => (string) $this->GetValue('LastMovement'),
+            'motionCount' => (int) $this->GetValue('MotionCount'),
+            'lastAlarm' => (string) $this->GetValue('LastAlarm'),
+            'alarmQuietDeadline' => $this->ReadAttributeInteger('AlarmQuietNotBefore'),
+            'rearmDeadline' => $this->ReadAttributeInteger('RearmNotBefore'),
+            'sensors' => $sensors,
+            'history' => $history
+        ];
+    }
+
+    private function PushVisualizationState(): void
+    {
+        try {
+            $this->UpdateVisualizationValue($this->BuildVisualizationState());
+        } catch (Throwable $e) {
+            // Die individuelle Darstellung ist rein optional. Ein Darstellungsfehler
+            // darf niemals den Alarmkern oder eine Aktoraktion beeinflussen.
+            $this->SendDebug('Visualization', 'Aktualisierung fehlgeschlagen: ' . $e->getMessage(), 0);
         }
     }
 
@@ -2322,13 +2500,26 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $scheduleRearm = false;
         $cancelRearm = false;
+        $scheduleAlarmAfterrun = false;
+        $cancelAlarmAfterrun = false;
+        $alarmAfterrunMs = 0;
         try {
             $this->SetValue($ident, $Enabled);
             $states = $this->ReadSensorStates();
             $session = $this->ReadSession('CurrentSession');
             $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
 
-            if ($sessionState === self::SESSION_REARM_WAIT) {
+            if ($sessionState === self::SESSION_ACTIVE) {
+                if ($this->AreAllMonitoredSensorsClear($states)) {
+                    $duration = max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
+                    $this->WriteAttributeInteger('AlarmQuietNotBefore', time() + $duration);
+                    $scheduleAlarmAfterrun = true;
+                    $alarmAfterrunMs = $duration * 1000;
+                } else {
+                    $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
+                    $cancelAlarmAfterrun = true;
+                }
+            } elseif ($sessionState === self::SESSION_REARM_WAIT) {
                 if ($this->AreAllMonitoredSensorsClear($states)) {
                     $this->WriteAttributeInteger(
                         'RearmNotBefore',
@@ -2347,6 +2538,12 @@ class LCNAlarmanlage extends IPSModuleStrict
             IPS_SemaphoreLeave($this->EngineSemaphoreName());
         }
 
+        if ($cancelAlarmAfterrun) {
+            $this->SetTimerInterval('AlarmTimeout', 0);
+        }
+        if ($scheduleAlarmAfterrun) {
+            $this->SetTimerInterval('AlarmTimeout', max(1, $alarmAfterrunMs));
+        }
         if ($cancelRearm) {
             $this->SetTimerInterval('RearmTimeout', 0);
             $this->SetTimerInterval('RearmDisplay', 0);

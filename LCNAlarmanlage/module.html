@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    padding: 10px 12px 14px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 14px;
+}
+.wrap { display: flex; flex-direction: column; gap: 9px; }
+.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 32px;
+}
+.label { min-width: 0; }
+.value { text-align: right; overflow-wrap: anywhere; }
+.status {
+    font-weight: 600;
+    line-height: 1.35;
+    padding: 2px 0 5px;
+}
+.status.alarm { color: #d32f2f; }
+.alarm-box {
+    display: none;
+    border: 1px solid rgba(220, 40, 40, .7);
+    border-radius: 8px;
+    padding: 9px 10px;
+    background: rgba(220, 40, 40, .12);
+}
+.alarm-box.active { display: block; animation: alarmPulse 1s ease-in-out infinite alternate; }
+@keyframes alarmPulse { from { opacity: .72; } to { opacity: 1; } }
+.alarm-title { font-weight: 700; color: #d32f2f; margin-bottom: 7px; }
+button.ack {
+    width: 100%;
+    border: 0;
+    border-radius: 7px;
+    padding: 9px 10px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    background: #d32f2f;
+    color: white;
+}
+.switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: 0 0 auto; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+    position: absolute; inset: 0; cursor: pointer;
+    background: rgba(128,128,128,.42); border-radius: 14px;
+    transition: .15s;
+}
+.slider:before {
+    content: ""; position: absolute; height: 18px; width: 18px;
+    left: 3px; bottom: 3px; border-radius: 50%; background: currentColor;
+    color: white; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: .15s;
+}
+.switch input:checked + .slider { background: #16b6a7; }
+.switch input:checked + .slider:before { transform: translateX(18px); }
+.time-grid { display: grid; grid-template-columns: 1fr 110px; gap: 7px 12px; align-items: center; }
+input[type="time"] {
+    width: 110px; padding: 5px 7px; border: 0; border-bottom: 1px solid rgba(128,128,128,.55);
+    background: transparent; color: inherit; font: inherit; text-align: center;
+}
+details {
+    border-top: 1px solid rgba(128,128,128,.25);
+    padding-top: 5px;
+}
+summary {
+    cursor: pointer; user-select: none; font-weight: 600; padding: 6px 1px;
+    list-style: none;
+}
+summary::-webkit-details-marker { display: none; }
+summary:before { content: "›"; display: inline-block; margin-right: 8px; transform: rotate(0deg); transition: .15s; }
+details[open] > summary:before { transform: rotate(90deg); }
+.detail-content { padding: 2px 2px 5px 16px; }
+.sensor-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    min-height: 34px; border-bottom: 1px solid rgba(128,128,128,.12);
+}
+.sensor-name { min-width: 0; overflow-wrap: anywhere; }
+.motion-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px;
+    background: rgba(128,128,128,.35); vertical-align: 1px;
+}
+.motion-dot.active { background: #e53935; box-shadow: 0 0 0 3px rgba(229,57,53,.12); }
+.protocol-grid { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(0, 1.5fr); gap: 7px 12px; }
+.protocol-grid .pv { text-align: right; overflow-wrap: anywhere; }
+.history-title { margin-top: 12px; margin-bottom: 6px; font-weight: 600; }
+.history {
+    max-height: 165px;
+    overflow-y: auto;
+    border: 1px solid rgba(128,128,128,.24);
+    border-radius: 7px;
+    padding: 3px 8px;
+    scrollbar-width: thin;
+}
+.history-row { padding: 6px 1px; border-bottom: 1px solid rgba(128,128,128,.12); }
+.history-row:last-child { border-bottom: 0; }
+.history-time { opacity: .72; font-size: .9em; margin-top: 2px; }
+.muted { opacity: .65; }
+@media (max-width: 520px) {
+    body { padding: 8px 9px 12px; }
+    .protocol-grid { grid-template-columns: 1fr; gap: 2px; }
+    .protocol-grid .pv { text-align: left; margin-bottom: 5px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+    <div class="row">
+        <div class="label">Alarmanlage EIN/AUS</div>
+        <label class="switch"><input id="arm" type="checkbox"><span class="slider"></span></label>
+    </div>
+    <div id="status" class="status">–</div>
+
+    <div id="alarmBox" class="alarm-box">
+        <div id="alarmTitle" class="alarm-title">ALARM AUSGELÖST</div>
+        <button class="ack" onclick="requestAction('Acknowledge', true)">Alarm deaktivieren</button>
+    </div>
+
+    <div class="row">
+        <div class="label">Automatik</div>
+        <label class="switch"><input id="automatic" type="checkbox"><span class="slider"></span></label>
+    </div>
+    <div class="time-grid">
+        <div>Scharf ab</div><input id="autoFrom" type="time" step="60">
+        <div>Unscharf ab</div><input id="autoTo" type="time" step="60">
+    </div>
+
+    <details id="roomsDetails">
+        <summary>Überwachte Räume</summary>
+        <div id="rooms" class="detail-content"></div>
+    </details>
+
+    <details id="protocolDetails">
+        <summary>Protokoll</summary>
+        <div class="detail-content">
+            <div class="protocol-grid">
+                <div>Erstauslöser</div><div id="firstTrigger" class="pv">–</div>
+                <div>Letzte Bewegung</div><div id="lastMovement" class="pv">–</div>
+                <div>Bewegungen</div><div id="motionCount" class="pv">0</div>
+                <div>Letzter Alarm</div><div id="lastAlarm" class="pv">–</div>
+            </div>
+            <div class="history-title">Historie</div>
+            <div id="history" class="history"><div class="history-row muted">Keine Bewegung gespeichert</div></div>
+        </div>
+    </details>
+</div>
+<script>
+let state = __INITIAL_STATE__;
+
+function esc(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
+
+function remaining(deadline) {
+    const d = Number(deadline || 0);
+    if (d <= 0) return 0;
+    return Math.max(0, Math.ceil(d - Date.now() / 1000));
+}
+
+function statusText() {
+    if (state.alarmActive) {
+        const rest = remaining(state.alarmQuietDeadline);
+        if (Number(state.alarmQuietDeadline || 0) > 0) {
+            return rest > 0 ? `ALARM AUSGELÖST – Nachlauf noch ${rest} s` : 'ALARM AUSGELÖST – Nachlauf beendet';
+        }
+        return 'ALARM AUSGELÖST – Bewegung aktiv';
+    }
+    const rearm = remaining(state.rearmDeadline);
+    if (rearm > 0 && String(state.status || '').toLowerCase().includes('wieder scharf')) {
+        return `Wieder scharf in ${rearm} s`;
+    }
+    return state.status || '–';
+}
+
+function renderStatusOnly() {
+    const el = document.getElementById('status');
+    el.textContent = statusText();
+    el.classList.toggle('alarm', !!state.alarmActive);
+}
+
+function renderRooms() {
+    const host = document.getElementById('rooms');
+    const sensors = Array.isArray(state.sensors) ? state.sensors : [];
+    if (!sensors.length) {
+        host.innerHTML = '<div class="muted">Keine GUS konfiguriert</div>';
+        return;
+    }
+    host.innerHTML = sensors.map(sensor => `
+        <div class="sensor-row">
+            <div class="sensor-name"><span class="motion-dot ${sensor.motion ? 'active' : ''}"></span>${esc(sensor.name)}</div>
+            <label class="switch">
+                <input type="checkbox" ${sensor.enabled ? 'checked' : ''}
+                    onchange="requestAction('${esc(sensor.ident)}', this.checked)">
+                <span class="slider"></span>
+            </label>
+        </div>`).join('');
+}
+
+function renderHistory() {
+    const host = document.getElementById('history');
+    const history = Array.isArray(state.history) ? state.history : [];
+    if (!history.length) {
+        host.innerHTML = '<div class="history-row muted">Keine Bewegung gespeichert</div>';
+        return;
+    }
+    host.innerHTML = history.map(item => `
+        <div class="history-row">
+            <div>${esc(item.name)}</div>
+            <div class="history-time">${esc(item.time)}</div>
+        </div>`).join('');
+}
+
+function render() {
+    document.getElementById('arm').checked = !!state.arm;
+    document.getElementById('automatic').checked = !!state.automatic;
+    document.getElementById('autoFrom').value = state.autoFrom || '22:00';
+    document.getElementById('autoTo').value = state.autoTo || '06:00';
+    document.getElementById('alarmBox').classList.toggle('active', !!state.alarmActive);
+    document.getElementById('firstTrigger').textContent = state.firstTrigger || '–';
+    document.getElementById('lastMovement').textContent = state.lastMovement || '–';
+    document.getElementById('motionCount').textContent = String(state.motionCount ?? 0);
+    document.getElementById('lastAlarm').textContent = state.lastAlarm || '–';
+    renderStatusOnly();
+    renderRooms();
+    renderHistory();
+}
+
+function handleMessage(data) {
+    try {
+        state = (typeof data === 'string') ? JSON.parse(data) : data;
+        if (!state || typeof state !== 'object') return;
+        render();
+    } catch (_) {}
+}
+
+document.getElementById('arm').addEventListener('change', e => requestAction('Arm', e.target.checked));
+document.getElementById('automatic').addEventListener('change', e => requestAction('Automatic', e.target.checked));
+document.getElementById('autoFrom').addEventListener('change', e => requestAction('AutoFrom', e.target.value));
+document.getElementById('autoTo').addEventListener('change', e => requestAction('AutoTo', e.target.value));
+
+render();
+setInterval(renderStatusOnly, 1000);
+</script>
+</body>
+</html>

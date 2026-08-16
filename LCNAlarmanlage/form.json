@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.8: stabiler Kern aus 0.1.4, direkte Samsung-WakeUp-Logik und neue GUS-EIN/AUS-Schalter in der Visualisierung."
+            "label": "Testversion 0.1.9: Alarmdauer als Nachlaufzeit nach letzter Bewegung, kompakte Kachel mit aufklappbaren überwachten Räumen und Protokoll."
         },
         {
             "type": "List",
@@ -164,9 +164,13 @@
         {
             "type": "NumberSpinner",
             "name": "AlarmDurationSeconds",
-            "caption": "Alarmdauer bis automatische Abschaltung (Sekunden)",
+            "caption": "Alarm-Nachlaufzeit nach letzter Bewegung (Sekunden)",
             "minimum": 10,
             "maximum": 3600
+        },
+        {
+            "type": "Label",
+            "label": "Die Nachlaufzeit startet erst, wenn alle aktuell überwachten GUS frei sind. Jede neue Bewegung stoppt den laufenden Nachlauf; sobald wieder alle Melder frei sind, beginnt die volle Nachlaufzeit erneut von vorn."
         },
         {
             "type": "NumberSpinner",
@@ -183,7 +187,7 @@
     "actions": [
         {
             "type": "Label",
-            "label": "Kein Polling: GUS und Panik-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Push/E-Mail werden nur beim ersten Trigger versendet. Die TV-Nachkontrolle liest nur kurzzeitig die bereits vorhandene lokale Statusvariable und erzeugt keine LCN-Abfragen."
+            "label": "Kein Polling: GUS und Panik-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Der Alarm-Nachlauf ist ein lokaler Einmal-Timer und läuft nur bei vollständig freiem Melderfeld. Push/E-Mail werden nur beim ersten Trigger versendet."
         }
     ]
 }
