@@ -1,4 +1,4 @@
-# Architektur 0.1.11
+# Architektur 0.1.12
 
 ## Sicherheitskern
 
@@ -41,7 +41,11 @@ Die TV-Funktion ist ein nachgeschalteter Helfer. Sie erhält nur zwei Ereignisse
 
 Der TV-Helfer darf niemals `Arm`, `AlarmActive`, `CurrentSession`, `ArmedReady`, `RearmNotBefore`, `AlarmQuietNotBefore` oder die Automatik verändern.
 
-EIN erfolgt direkt über `SamsungTizen_WakeUp()`. Ein einziger Retry nach 5 s ist erlaubt. AUS erfolgt nur, wenn der TV vom Alarm übernommen/gestartet wurde. War der TV beim Alarmstart bereits EIN, wird er nach Alarmende nicht ausgeschaltet.
+EIN erfolgt direkt über `SamsungTizen_WakeUp()`. Ein einziger Retry nach 5 s ist erlaubt. Anschließend startet der aus `Samsung Alarmvideo Test 0.2.6` übernommene UPnP-/DLNA-Pfad das Alarmvideo. Die Endlosschleife wird nur während einer aktiven Alarm-Session über `SetNextAVTransportURI` nachgeladen.
+
+Bei `EndTVForAlarm()` wird die Videowiedergabe unabhängig vom ursprünglichen TV-Zustand zuerst per UPnP `Stop` beendet. Der TV selbst wird nur ausgeschaltet, wenn er vom Alarm übernommen/gestartet wurde. War der TV beim Alarmstart bereits EIN, bleibt er nach Alarmende EIN.
+
+Der DLNA-Datenpfad liegt in einer eigenen, versteckten technischen Hilfsinstanz `LCN Alarmanlage MediaServer`, weil der Symcon Server Socket eingehende HTTP-Verbindungen an ein Child-Modul zustellt. Diese Hilfsinstanz gehört zur selben Alarmanlagen-Bibliothek und ersetzt vollständig den alten Test-Helper. Sie verändert keinerlei Alarmzustand. Der zugehörige Server Socket wird einmalig automatisch angelegt und anschließend wiederverwendet.
 
 ## Kompakte Kachel
 
@@ -64,4 +68,4 @@ Die Historie zeigt ausschließlich `motion`-Ereignisse des aktuellen bzw. letzte
 
 ## Update-/Rollback-Regeln
 
-GUIDs, Prefix und bestehende Property-/Ident-Namen nicht ändern. `AlarmDurationSeconds` wurde ausdrücklich nicht umbenannt. Neue Attribute haben neutrale Defaults. Keine Hardwareaktionen allein durch Update/ApplyChanges.
+GUIDs, Prefix und bestehende Property-/Ident-Namen nicht ändern. `AlarmDurationSeconds` wurde ausdrücklich nicht umbenannt. Neue Video-Attribute haben neutrale Laufzeitzustände. `ApplyChanges()` darf bei aktivierter TV-Funktion nur lokale technische MediaServer-Instanzen einrichten, aber keinen TV-, LCN- oder Alarmbefehl senden.

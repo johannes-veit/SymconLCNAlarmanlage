@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.11: vollständiges Direktupdate ab 0.1.9; enthält den HTML-SDK-Kompatibilitätsfix aus 0.1.10 und die optisch angepasste kompakte Kachel. Alarm-, TV-, GUS-, Panik-, Push-, E-Mail- und Nachlauflogik bleiben funktional unverändert."
+            "label": "Version 0.1.12: integriert den vollständig getesteten Samsung-Alarmvideo-Pfad aus Testmodul 0.2.6 direkt in die Alarmanlage. Alarmkern, GUS, Paniklicht, Quittierung, Push, E-Mail, Nachlauf und Wieder-scharf-Logik bleiben unverändert."
         },
         {
             "type": "List",
@@ -142,7 +142,7 @@
         {
             "type": "CheckBox",
             "name": "TVEnabled",
-            "caption": "Samsung-TV bei Alarm einschalten"
+            "caption": "Samsung-Alarmvideo bei Alarm verwenden"
         },
         {
             "type": "SelectInstance",
@@ -156,6 +156,34 @@
             "validVariableTypes": [
                 0
             ]
+        },
+        {
+            "type": "ValidationTextBox",
+            "name": "TVIP",
+            "caption": "Samsung-TV – IP-Adresse"
+        },
+        {
+            "type": "ValidationTextBox",
+            "name": "SymconIP",
+            "caption": "SymBox – IP-Adresse für Alarmvideo"
+        },
+        {
+            "type": "NumberSpinner",
+            "name": "MediaServerPort",
+            "caption": "Alarmvideo-Medienserver – Wunschport",
+            "minimum": 1025,
+            "maximum": 65535
+        },
+        {
+            "type": "NumberSpinner",
+            "name": "VideoStartDelayMs",
+            "caption": "Alarmvideo starten nach (ms)",
+            "minimum": 250,
+            "maximum": 30000
+        },
+        {
+            "type": "Label",
+            "label": "Das Alarmvideo verhält sich wie ein weiteres Paniklicht: Alarm EIN startet die Wiedergabe in Endlosschleife; Alarmende oder Quittierung stoppt das Video. Der interne DLNA-Medienserver wird automatisch einmalig eingerichtet und danach wiederverwendet. Ist der Wunschport durch das Testmodul noch belegt, verwendet die Alarmanlage während der Migration automatisch den nächsten freien Port."
         },
         {
             "type": "Label",

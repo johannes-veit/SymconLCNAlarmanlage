@@ -1,12 +1,12 @@
 # LCN Alarmanlage für IP-Symcon 9
 
-## Version 0.1.11
+## Version 0.1.12
 
-Version 0.1.11 ist ein **vollständiges Direktupdate ab 0.1.9**. Version 0.1.10 muss vorher nicht installiert werden. Enthalten sind sowohl der JSON-Kompatibilitätsfix der HTML-SDK-Kachel aus 0.1.10 als auch die optische Anpassung der kompakten Kachel.
+Version 0.1.12 baut direkt auf der stabilen Alarmanlage 0.1.11 auf. Der Alarmkern wurde nicht umgebaut. Neu ist ausschließlich der vollständig getestete Samsung-Alarmvideo-Pfad aus `Samsung Alarmvideo Test 0.2.6`, einschließlich internem DLNA-Medienserver, Wake-on-LAN, Videostart, Endlosschleife und Video-Stopp.
 
-Die Funktionslogik von Alarm-Nachlauf, GUS, Paniklicht, Quittierung, Push, E-Mail und Samsung-TV bleibt gegenüber 0.1.10 unverändert.
+Die bisherigen Testmodule `Samsung Alarmvideo Test` und `Samsung Alarmvideo MediaServer` werden für den Betrieb der Alarmanlage nicht mehr benötigt. Die Alarmanlage enthält eine eigene interne, versteckte MediaServer-Hilfsinstanz und die beiden getesteten Videodateien. Für die sichere Migration sollten die Testmodule jedoch erst nach einem erfolgreichen Live-Gesamttest der 0.1.12 gelöscht werden; siehe `docs/TESTPLAN-0.1.12.md`.
 
-### Visuelle Änderungen 0.1.11
+### Unveränderte Visualisierung aus 0.1.11
 
 - keine zusätzliche eigene Überschrift innerhalb der HTML-Kachel; die Kachelbezeichnung kommt ausschließlich von Symcon
 - Schriftstack `Poppins / Segoe UI / Arial` passend zur übrigen Visualisierung
@@ -42,41 +42,48 @@ Eine echte Statusflanke `EIN -> AUS` eines freigegebenen Paniklichts während ei
 
 Push und E-Mail entsprechen dem getesteten Stand 0.1.4. Pro Alarm-Session wird nur beim ersten GUS-Trigger eine Benachrichtigung eingeplant. Weitere Bewegungen ergänzen ausschließlich das Bewegungsprofil. Persönliche Empfängeradressen bleiben ausschließlich in der lokalen Symcon-Instanzkonfiguration.
 
-### Samsung-TV
+### Samsung-TV / Alarmvideo
 
-Die TV-Funktion ist nach dem Update standardmäßig AUS. Konfiguriert werden ausschließlich:
+Die gesamte TV-/Videofunktion bleibt über **Samsung-Alarmvideo bei Alarm verwenden** optional. Beim Update werden keine Alarm- oder TV-Befehle ausgelöst.
 
-- die vorhandene `SamsungTizen`-Instanz
-- die vorhandene Boolean-Statusvariable des TV
+Konfiguriert werden:
 
-Die PowerFix-Impulsvariable wird **nicht** verwendet.
+- vorhandene `SamsungTizen`-Instanz
+- vorhandene Boolean-Statusvariable des TV
+- TV-IP für UPnP/AVTransport
+- SymBox-IP, unter der der TV den internen DLNA-Server erreicht
+- Medienserver-Wunschport, Standard `8090`
+- Video-Startverzögerung, Standard `4000 ms`
 
 Ablauf beim Alarmstart:
 
-1. TV-Status lokal lesen.
-2. Bereits EIN: keine Aktion; der TV bleibt auch nach dem Alarm EIN.
-3. AUS: sofort `SamsungTizen_WakeUp()` senden.
-4. Nach 5 s noch AUS: genau ein zweiter `SamsungTizen_WakeUp()`.
-5. Danach keine weiteren Wake-Versuche.
+1. internen DLNA-Medienserver prüfen bzw. einmalig automatisch anlegen
+2. TV-Status lokal lesen
+3. ist der TV AUS: sofort `SamsungTizen_WakeUp()`; nach 5 s maximal ein zweiter Wake-Befehl
+4. Alarmvideo nach 4 s starten; maximal drei Videostart-Versuche
+5. bevorzugt getestetes MPEG-DLNA-Profil, MP4 als Fallback
+6. `SetAVTransportURI` + `Play`; Endlosschleife über `SetNextAVTransportURI`
+7. nach bestätigtem Medienabruf wird `NextURI` alle 30 s nachgeladen, solange die Alarm-Session aktiv ist
 
-Ablauf beim Alarmende, falls der TV vom Alarm gestartet wurde:
+Ablauf beim Alarmende/Quittieren:
 
-1. ausstehenden Wake-Retry sofort stoppen
-2. wenn TV EIN: `SamsungTizen_SendKeys(..., 'KEY_POWER')`
-3. nach 10 s lokalen TV-Status kontrollieren
-4. falls weiterhin EIN: erneut `KEY_POWER`
-5. begrenzte Nachkontrolle; keine Endlosschleife
+1. alle Video-Start-/Retry-/Loop-Timer sofort stoppen
+2. Wiedergabe per UPnP `Stop` beenden – unabhängig davon, ob der TV vor dem Alarm schon EIN war
+3. war der TV vorher EIN: TV bleibt EIN
+4. wurde der TV vom Alarm gestartet: danach `KEY_POWER` und begrenzte lokale Nachkontrolle wie bisher
 
-Die TV-Helfer besitzen **keinen Pfad**, der `Arm`, `AlarmActive`, `CurrentSession`, Automatik oder den Wieder-scharf-Countdown setzt. Samsung-Fehler werden nur protokolliert und dürfen den Alarmkern nicht beeinflussen.
+Damit verhält sich das Alarmvideo logisch wie ein weiteres Paniklicht: **Alarm aktiv = Video EIN**, **Alarm beendet = Video AUS**. Die TV-/Video-Helfer setzen niemals `Arm`, `AlarmActive`, `CurrentSession`, Automatik oder Wieder-scharf-Countdown.
+
+Der DLNA-Server wird nach einmaliger Einrichtung wiederverwendet. Wenn während der Migration das alte Testmodul Port 8090 noch belegt, sucht die Alarmanlage automatisch den nächsten freien Port bis `8090 + 20`; dadurch können altes Testmodul und neue Alarmanlage zunächst parallel getestet werden.
 
 ### Updateprinzip
 
 - Bibliotheks-GUID bleibt `{931F4DEE-ED55-42F9-9DDB-A8C23293A89D}`
 - Modul-GUID bleibt `{F5B0CD30-B98C-4580-BD71-432F3018628F}`
 - Prefix bleibt `LCNALARM`
-- alle bestehenden 0.1.4-Properties und Variablen-Idents bleiben erhalten
-- neue TV-Properties haben neutrale Defaults; ein Update allein sendet keinen TV-Befehl
-- keine Hardwareaktion allein durch `ApplyChanges()`
+- alle bestehenden Properties und Variablen-Idents aus 0.1.11 bleiben erhalten
+- neue Video-Properties werden ergänzt; bestehende TV-Auswahl bleibt erhalten
+- `ApplyChanges()` richtet bei aktivierter TV-Funktion nur den lokalen Medienserver ein, sendet aber keinen TV-/Alarmbefehl
 
 ## Alarm-Nachlauf 0.1.9
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.12
+
+- Vollständiges Direktupdate auf Basis der stabil getesteten Alarmanlage 0.1.11; Bibliotheks-GUID, Hauptmodul-GUID, Prefix, Properties und bestehende Variablen-Idents bleiben erhalten.
+- Der real vollständig getestete Samsung-Alarmvideo-Pfad aus `Samsung Alarmvideo Test 0.2.6` ist jetzt direkt in die Alarmanlage integriert.
+- Alarmstart: TV bei Bedarf per `SamsungTizen_WakeUp()` wecken, einmaliger Wake-Retry nach 5 s, Alarmvideo nach 4 s starten, begrenzte Videostart-Retries, MPEG/MP4-Fallback und bestätigte Endlosschleife über fortlaufende `SetNextAVTransportURI`-Nachladung.
+- Alarmende, Quittierung und vollständiges Ausschalten: Alarmvideo wird wie ein weiteres Paniklicht sofort per UPnP `Stop` beendet. War der TV vor Alarm EIN, bleibt er EIN; wurde er vom Alarm gestartet, wird er danach wie bisher per `KEY_POWER` ausgeschaltet und nachkontrolliert.
+- Der in 0.2.6 getestete DLNA-Medienserver ist als interne Alarmanlagen-Hilfsinstanz integriert; `ALARM.mp4` und `ALARM_DLNA.mpeg` sind Bestandteil derselben Bibliothek.
+- Der Medienserver wird einmalig automatisch vorbereitet und danach wiederverwendet. Beim Alarmtrigger gibt es einen schnellen Pfad ohne erneutes `ApplyChanges()`/Socket-Neustart.
+- Für eine sichere Migration kann das alte Testmodul parallel installiert bleiben: ist Port 8090 noch durch dessen Server Socket belegt, wählt die Alarmanlage automatisch den nächsten freien Port bis +20 und verwendet diesen dauerhaft.
+- Neue Konfigurationswerte: TV-IP, SymBox-IP, Medienserver-Wunschport und Video-Startverzögerung; Defaults entsprechen dem real getesteten Aufbau (`192.168.103.54`, `192.168.103.59`, `8090`, `4000 ms`).
+- Die gesamte TV-/Videofunktion bleibt über `TVEnabled` optional. Fehler des optionalen Videozweigs werden protokolliert und dürfen Alarmkern, GUS, Paniklicht, Quittierung, Push, E-Mail, Nachlauf oder Wieder-scharf-Logik nicht stilllegen.
+- Keine Änderung an der eigentlichen Alarmkernlogik aus 0.1.11.
+
 ## 0.1.11
 
 - Vollständiges Direktupdate auf Basis von 0.1.10; ein vorheriges Installieren von 0.1.10 ist nicht erforderlich.

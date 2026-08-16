@@ -1,0 +1,9 @@
+{
+  "elements": [
+    {
+      "type": "Label",
+      "caption": "Interne, automatisch verwaltete Hilfsinstanz der LCN Alarmanlage für das Samsung-Alarmvideo. Keine manuelle Konfiguration erforderlich."
+    }
+  ],
+  "actions": []
+}
