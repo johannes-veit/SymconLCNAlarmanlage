@@ -1,3 +1,13 @@
+## 0.1.18
+
+- reine Visualisierungskorrektur; Alarmkern und `LCNAlarmanlage/module.php` byteidentisch zu 0.1.17
+- globale `color-scheme: light dark` entfernt
+- Textfarbe verwendet `var(--content-color, #202124)`
+- fester Schutzbereich unter der nativen Kachelüberschrift verwendet `var(--card-color, #ffffff)` statt der WebView-Systemfarbe `Canvas`
+- Uhrzeitfelder verwenden ebenfalls `--content-color`
+- keine neuen Variablen, Timer, Properties, LCN-Abfragen oder Hardwarebefehle
+- rollbackfähig auf 0.1.17; 0.1.14 bleibt bewährte Rollback-Basis
+
 ## 0.1.17
 
 - reine, rollbackfähige Visualisierungskorrektur auf Basis 0.1.16; 0.1.14 bleibt die bewährte Rollback-Basis

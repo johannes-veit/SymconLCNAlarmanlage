@@ -1,5 +1,9 @@
 # LCN Alarmanlage für IP-Symcon 9
 
+## Version 0.1.18
+
+0.1.18 ist eine reine, rollbackfähige Visualisierungskorrektur auf Basis von 0.1.17. Der Alarmkern und `module.php` bleiben byteidentisch zu 0.1.17. Für die HTML-Kachel werden die von der Symcon-Kachelvisualisierung bereitgestellten CSS-Farben `--content-color` und `--card-color` verwendet. Die bisherige globale CSS-Angabe `color-scheme: light dark` und die Systemfarbe `Canvas` wurden entfernt, weil diese Kombination in der Smartphone-App je nach WebView/Farbschema zu schwarzem Kopfbereich bzw. unsichtbarer Schrift führen konnte. Desktop- und Smartphone-Darstellung verwenden nun dieselben Symcon-Farben. WOL, Alarmvideo, Lichtzustandswiederherstellung, GUS-Logik, Neustartschutz, E-Mail-Quittierung, Variablen und Polling-Verhalten sind unverändert.
+
 ## Version 0.1.17
 
 0.1.17 ist eine reine, rollbackfähige Visualisierungskorrektur auf Basis von 0.1.16. Beim Scrollen wird der Bereich unter der nativen Symcon-Kachelüberschrift nun mit einem festen, farbschemaabhängigen Hintergrund geschützt, sodass keine Texte mehr unter die Überschrift laufen. In **Status Bewegungsmelder** wird der Begriff `Bewegungsmelder`/`Bewegungsmeder` aus dem sichtbaren Namen entfernt; rechts steht analog zur Lichtstatusdarstellung `Bewegung` bzw. `Ruhe`. Grauer Punkt = Ruhe, grüner Punkt = Bewegung. Alarmkern, Lichtzustandswiederherstellung, Startschutz, E-Mail-Quittierung, Samsung-WOL/Video, vorhandene Variablen und Polling-Verhalten bleiben unverändert. 0.1.14 bleibt die bewährte Rollback-Basis.
