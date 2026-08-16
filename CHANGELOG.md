@@ -1,3 +1,30 @@
+## 0.1.21
+
+- Smartphone-Schalter vollständig auf eigene touch-stabile Button-Switches umgestellt; keine versteckten nativen Checkboxen mehr
+- optimistische Bedienung mit Pending-Guard: alte bzw. parallel eintreffende Visualisierungsmeldungen dürfen einen gerade gesetzten Schalter bis zur Modulbestätigung nicht zurückspringen lassen
+- Pending-Zustände werden für maximal 5 s lokal zwischengespeichert, sodass auch ein kurzfristiger WebView-Rebuild den gerade gewählten Wert nicht verwirft
+- nach jeder Bedienung erfolgt ein begrenzter rein lesender Zustandsabgleich; bei ausbleibender Bestätigung fällt die Anzeige nach spätestens 5 s auf den echten Modulzustand zurück
+- Schalter Alarmanlage, Automatik und alle Raum-/GUS-Schalter verwenden denselben abgesicherten Bedienpfad
+- Zeitfelder Scharf ab / Unscharf ab werden während eines geöffneten mobilen Zeitdialogs nicht mehr von asynchronen Statusmeldungen überschrieben; Change+Blur erzeugen keinen Doppelauftrag
+- Scrollpositionen der drei Aufklappbereiche bleiben auch bei Listenaktualisierungen erhalten
+- zusätzlicher Touch-Scroll-Fallback für mobile WebViews, falls verschachteltes CSS-Scrolling von der App abgefangen wird
+- Alarmkern, Sensorlogik, Quittierung, Lichtzustandswiederherstellung, Neustartschutz, E-Mail, WOL und Video gegenüber 0.1.20 unverändert
+- keine zusätzlichen Symcon-Variablen, Timer, Properties oder LCN-Abfragen
+
+## 0.1.20
+
+- mobile Kachelstabilität korrigiert: native `<details>` durch eigene CSS/JS-Akkordeons ersetzt
+- jede geöffnete Kategorie besitzt auf Smartphone ein eigenes Touch-Scrollfenster (`overflow-y: scroll`, `max-height: 46vh`)
+- Auf-/Zuklappen sendet keine Modulaktion und verändert keinen Alarmzustand
+- letzter bestätigter Visualisierungszustand wird für kurze WebView-Rebuilds maximal 20 s lokal zwischengespeichert
+- Zustandsupdates werden feldweise gemergt; leere/ungültige/partielle Zwischenmeldungen löschen keine bereits angezeigten Werte
+- Uhrzeiten werden nie mehr auf HTML-Defaults `22:00`/`06:00` zurückgesetzt; sie werden nur bei tatsächlich empfangenem Modulwert aktualisiert
+- GUS-, Bewegungsmelder- und Protokolllisten werden nur bei tatsächlich empfangenen Arraydaten neu aufgebaut; dadurch kein kurzzeitiges `Keine ... gefunden` bei Reloads
+- neuer rein lesender RequestAction-Pfad `RefreshVisualization` liefert nach einem mobilen WebView-Reload einmalig den vollständigen Istzustand
+- `RefreshVisualization` verändert keine Variable, keinen Alarmzustand, keinen Timer, keine LCN-Abfrage und keinen Aktor
+- keine zusätzlichen Symcon-Variablen und kein Polling
+- Alarmkern, Lichtlogik, Neustartschutz, E-Mail, WOL und Video gegenüber 0.1.19 unverändert
+
 ## 0.1.19
 
 - Smartphone-Scrollen für lange aufgeklappte HTML-Bereiche korrigiert

@@ -1,15 +1,16 @@
-<!-- LCN Alarmanlage visualization 0.1.19: explicit touch-scroll container, mobile/desktop feature parity -->
+<!-- LCN Alarmanlage visualization 0.1.21: mobile-safe controls, pending-action guard, stable state cache -->
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>
 * { box-sizing: border-box; }
 html, body {
     margin: 0;
     width: 100%;
     height: 100%;
+    min-height: 100%;
     overflow: hidden;
     background: transparent;
     color: var(--content-color, #202124);
@@ -18,25 +19,25 @@ html, body {
     line-height: 1.45;
     -webkit-tap-highlight-color: transparent;
 }
-/* Eigener Scroll-Container statt implizitem body-Scrolling. Das ist in den
-   Android-/iOS-WebViews der Symcon-App robuster, insbesondere bei langen
-   aufgeklappten <details>-Bereichen. */
+/* Der Aussenbereich bleibt immer exakt so gross wie die Kachel. Dadurch kann
+   ein Auf-/Zuklappen die WebView-Hoehe nicht veraendern und keinen Tile-Rebuild
+   durch eine Groessenaenderung provozieren. */
 .scroll-pane {
-    position: absolute;
+    position: fixed;
     inset: 0;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
     overflow-x: hidden;
-    overflow-y: auto;
+    overflow-y: scroll;
     -webkit-overflow-scrolling: touch;
     touch-action: pan-y;
-    overscroll-behavior-y: contain;
+    overscroll-behavior-y: auto;
     scrollbar-width: thin;
-    padding: 72px 10px max(12px, env(safe-area-inset-bottom));
+    padding: 72px 10px max(14px, env(safe-area-inset-bottom));
 }
-/* Die native Symcon-Kachelueberschrift liegt ueber dem HTML-Bereich.
-   Dieser feste Hintergrundstreifen verhindert, dass beim Scrollen Inhalt
-   optisch unter die Kachelueberschrift geschoben wird. */
-body::before {
-    content: "";
+/* Schutz unter der nativen Symcon-Kachelueberschrift. */
+.header-mask {
     position: fixed;
     z-index: 1000;
     top: 0;
@@ -46,7 +47,7 @@ body::before {
     pointer-events: none;
     background: var(--card-color, #ffffff);
 }
-.wrap { display: flex; flex-direction: column; gap: 7px; }
+.wrap { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .row {
     display: flex;
     align-items: center;
@@ -62,6 +63,7 @@ body::before {
     padding: 2px 0 5px;
 }
 .status.alarm { color: #d32f2f; }
+.status.loading { opacity: .65; font-weight: 500; }
 .alarm-box {
     display: none;
     border: 1px solid rgba(220, 40, 40, .7);
@@ -83,39 +85,85 @@ button.ack {
     background: #d32f2f;
     color: white;
 }
-.switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: 0 0 auto; }
-.switch input { opacity: 0; width: 0; height: 0; }
-.slider {
-    position: absolute; inset: 0; cursor: pointer;
-    background: rgba(128,128,128,.42); border-radius: 14px;
-    transition: .15s;
+.switch-button {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    width: 42px;
+    height: 24px;
+    flex: 0 0 42px;
+    border: 0;
+    border-radius: 14px;
+    padding: 0;
+    margin: 0;
+    background: rgba(128,128,128,.42);
+    color: white;
+    cursor: pointer;
+    transition: background .12s ease, opacity .12s ease;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
 }
-.slider:before {
-    content: ""; position: absolute; height: 18px; width: 18px;
-    left: 3px; bottom: 3px; border-radius: 50%; background: currentColor;
-    color: white; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: .15s;
+.switch-button.on { background: #16b6a7; }
+.switch-button.pending { opacity: .78; }
+.switch-button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.switch-knob {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 3px;
+    top: 3px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.25);
+    transform: translateX(0);
+    transition: transform .12s ease;
+    pointer-events: none;
 }
-.switch input:checked + .slider { background: #16b6a7; }
-.switch input:checked + .slider:before { transform: translateX(18px); }
+.switch-button.on .switch-knob { transform: translateX(18px); }
 .time-grid { display: grid; grid-template-columns: 1fr 110px; gap: 7px 12px; align-items: center; }
 input[type="time"] {
     width: 110px; padding: 5px 7px; border: 0; border-bottom: 1px solid rgba(128,128,128,.55);
     background: transparent; color: var(--content-color, #202124); font: inherit; text-align: center;
 }
-details {
+input[type="time"].pending-input { border-bottom-color: #16b6a7; }
+button, input { touch-action: manipulation; }
+
+/* Keine nativen <details>-Elemente mehr. Einige mobile WebViews bauen beim
+   Toggle eines <details> die HTML-Kachel neu auf. Die eigenen Akkordeons
+   veraendern ausschliesslich CSS-Klassen und senden keine Modulaktion. */
+.accordion {
     border-top: 1px solid rgba(128,128,128,.25);
     padding-top: 5px;
+    min-width: 0;
 }
-summary {
-    cursor: pointer; user-select: none; font-weight: 500; padding: 6px 1px;
-    list-style: none;
+.accordion-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    padding: 6px 1px;
+    margin: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
     touch-action: manipulation;
 }
-button, input, label.switch { touch-action: manipulation; }
-summary::-webkit-details-marker { display: none; }
-summary:before { content: "›"; display: inline-block; margin-right: 8px; transform: rotate(0deg); transition: .15s; }
-details[open] > summary:before { transform: rotate(90deg); }
-.detail-content { padding: 2px 2px 5px 16px; }
+.accordion-arrow {
+    display: inline-block;
+    flex: 0 0 auto;
+    transform: rotate(0deg);
+    transition: transform .15s;
+}
+.accordion.open .accordion-arrow { transform: rotate(90deg); }
+.accordion-panel { display: none; min-width: 0; }
+.accordion.open .accordion-panel { display: block; }
+.detail-content { padding: 2px 2px 5px 16px; min-width: 0; }
+
 .sensor-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     min-height: 34px; border-bottom: 1px solid rgba(128,128,128,.12);
@@ -147,22 +195,15 @@ details[open] > summary:before { transform: rotate(90deg); }
     background: rgba(127,127,127,.50);
 }
 .motion-status-row.active .motion-status-dot { background: #00c7b0; }
-.motion-status-name {
-    min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
-}
-.motion-status-state {
-    opacity: .62;
-    font-size: .92em;
-    white-space: nowrap;
-}
+.motion-status-name { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.motion-status-state { opacity: .62; font-size: .92em; white-space: nowrap; }
 .protocol-grid { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(0, 1.5fr); gap: 7px 12px; }
 .protocol-grid .pv { text-align: right; overflow-wrap: anywhere; }
 .history-title { margin-top: 12px; margin-bottom: 6px; font-weight: 600; }
 .history {
     max-height: 165px;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     border: 1px solid rgba(128,128,128,.24);
     border-radius: 7px;
     padding: 3px 8px;
@@ -172,73 +213,147 @@ details[open] > summary:before { transform: rotate(90deg); }
 .history-row:last-child { border-bottom: 0; }
 .history-time { opacity: .72; font-size: .9em; margin-top: 2px; }
 .muted { opacity: .65; }
+.loading-row { padding: 5px 0; opacity: .65; }
+
 @media (max-width: 520px) {
     .scroll-pane {
         padding: 72px 9px max(18px, env(safe-area-inset-bottom));
-        overscroll-behavior-y: auto;
+        overflow-y: scroll;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
     }
     .protocol-grid { grid-template-columns: 1fr; gap: 2px; }
     .protocol-grid .pv { text-align: left; margin-bottom: 5px; }
-    /* Kein verschachteltes Scrollfenster auf dem Smartphone. Die gesamte
-       Kachel scrollt; dadurch bleibt die Touch-Geste auch in der Historie
-       und in langen aufgeklappten Kategorien eindeutig. */
+    .switch-button {
+        min-width: 46px;
+        width: 46px;
+        height: 28px;
+        flex-basis: 46px;
+        border-radius: 15px;
+    }
+    .switch-knob { width: 20px; height: 20px; left: 4px; top: 4px; }
+    .switch-button.on .switch-knob { transform: translateX(18px); }
+
+    /* Auf dem Smartphone erhaelt JEDE geoeffnete Kategorie ein eigenes,
+       eindeutig scrollbares Fenster. So bleibt der Inhalt innerhalb der
+       WebView erreichbar, selbst wenn die Symcon-App den aeusseren Tile-Scroll
+       abfaengt. */
+    .accordion.open .accordion-panel {
+        max-height: 46vh;
+        overflow-x: hidden;
+        overflow-y: scroll;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
+        overscroll-behavior-y: contain;
+        scrollbar-width: thin;
+        padding-right: 2px;
+    }
+    .accordion.open .accordion-panel::-webkit-scrollbar { width: 5px; }
+    .accordion.open .accordion-panel::-webkit-scrollbar-thumb {
+        background: rgba(128,128,128,.40);
+        border-radius: 4px;
+    }
+    /* Protokoll scrollt als eine Einheit; kein drittes verschachteltes
+       Scrollfenster innerhalb des Kategorienfensters. */
     .history { max-height: none; overflow: visible; }
 }
 </style>
 </head>
 <body>
+<div class="header-mask" aria-hidden="true"></div>
 <div class="scroll-pane" id="scrollPane">
 <div class="wrap">
     <div class="row">
         <div class="label">Alarmanlage EIN/AUS</div>
-        <label class="switch"><input id="arm" type="checkbox"><span class="slider"></span></label>
+        <button id="arm" class="switch-button" type="button" role="switch" aria-checked="false" aria-label="Alarmanlage EIN/AUS"><span class="switch-knob"></span></button>
     </div>
-    <div id="status" class="status">–</div>
+    <div id="status" class="status loading">Status wird geladen …</div>
 
     <div id="alarmBox" class="alarm-box">
         <div id="alarmTitle" class="alarm-title">ALARM AUSGELÖST</div>
-        <button class="ack" onclick="requestAction('Acknowledge', true)">Alarm deaktivieren</button>
+        <button class="ack" type="button" onclick="requestAction('Acknowledge', true)">Alarm deaktivieren</button>
     </div>
 
     <div class="row">
         <div class="label">Automatik</div>
-        <label class="switch"><input id="automatic" type="checkbox"><span class="slider"></span></label>
+        <button id="automatic" class="switch-button" type="button" role="switch" aria-checked="false" aria-label="Automatik"><span class="switch-knob"></span></button>
     </div>
     <div class="time-grid">
         <div>Scharf ab</div><input id="autoFrom" type="time" step="60">
         <div>Unscharf ab</div><input id="autoTo" type="time" step="60">
     </div>
 
-    <details id="roomsDetails">
-        <summary>Überwachte Räume</summary>
-        <div id="rooms" class="detail-content"></div>
-    </details>
-
-    <details id="motionDetails">
-        <summary>Status Bewegungsmelder</summary>
-        <div id="motionSensors" class="detail-content"></div>
-    </details>
-
-    <details id="protocolDetails">
-        <summary>Protokoll</summary>
-        <div class="detail-content">
-            <div class="protocol-grid">
-                <div>Erstauslöser</div><div id="firstTrigger" class="pv">–</div>
-                <div>Letzte Bewegung</div><div id="lastMovement" class="pv">–</div>
-                <div>Bewegungen</div><div id="motionCount" class="pv">0</div>
-                <div>Letzter Alarm</div><div id="lastAlarm" class="pv">–</div>
-            </div>
-            <div class="history-title">Historie</div>
-            <div id="history" class="history"><div class="history-row muted">Keine Bewegung gespeichert</div></div>
+    <section class="accordion" id="roomsAccordion">
+        <button class="accordion-toggle" type="button" data-accordion="roomsAccordion" aria-expanded="false">
+            <span class="accordion-arrow">›</span><span>Überwachte Räume</span>
+        </button>
+        <div class="accordion-panel" id="roomsPanel">
+            <div id="rooms" class="detail-content"><div class="loading-row">Daten werden geladen …</div></div>
         </div>
-    </details>
+    </section>
+
+    <section class="accordion" id="motionAccordion">
+        <button class="accordion-toggle" type="button" data-accordion="motionAccordion" aria-expanded="false">
+            <span class="accordion-arrow">›</span><span>Status Bewegungsmelder</span>
+        </button>
+        <div class="accordion-panel" id="motionPanel">
+            <div id="motionSensors" class="detail-content"><div class="loading-row">Daten werden geladen …</div></div>
+        </div>
+    </section>
+
+    <section class="accordion" id="protocolAccordion">
+        <button class="accordion-toggle" type="button" data-accordion="protocolAccordion" aria-expanded="false">
+            <span class="accordion-arrow">›</span><span>Protokoll</span>
+        </button>
+        <div class="accordion-panel" id="protocolPanel">
+            <div class="detail-content">
+                <div class="protocol-grid">
+                    <div>Erstauslöser</div><div id="firstTrigger" class="pv">–</div>
+                    <div>Letzte Bewegung</div><div id="lastMovement" class="pv">–</div>
+                    <div>Bewegungen</div><div id="motionCount" class="pv">0</div>
+                    <div>Letzter Alarm</div><div id="lastAlarm" class="pv">–</div>
+                </div>
+                <div class="history-title">Historie</div>
+                <div id="history" class="history"><div class="history-row muted">Daten werden geladen …</div></div>
+            </div>
+        </div>
+    </section>
 </div>
 </div>
 <script>
-let state = __INITIAL_STATE__;
+const INITIAL_STATE = __INITIAL_STATE__;
+const KNOWN_KEYS = [
+    'arm', 'status', 'automatic', 'autoFrom', 'autoTo', 'alarmActive',
+    'firstTrigger', 'lastMovement', 'motionCount', 'lastAlarm',
+    'alarmQuietDeadline', 'rearmDeadline', 'sensors', 'motionSensors', 'history'
+];
+const STATE_CACHE_KEY = 'LCNAlarmanlage.state.v121';
+const UI_CACHE_KEY = 'LCNAlarmanlage.ui.v121';
+const PENDING_CACHE_KEY = 'LCNAlarmanlage.pending.v121';
+const STATE_CACHE_MAX_AGE_MS = 20000;
+let state = {};
+let haveValidState = false;
+let roomsSignature = null;
+let motionSignature = null;
+let historySignature = null;
+let lastRefreshRequest = 0;
+const pendingActions = new Map();
+const PENDING_ACTION_TIMEOUT_MS = 5000;
+const PENDING_REFRESH_DELAY_MS = 900;
+
+const CORE_CONTROL_MAP = {
+    arm: { stateKey: 'arm', action: 'Arm', type: 'bool' },
+    automatic: { stateKey: 'automatic', action: 'Automatic', type: 'bool' },
+    autoFrom: { stateKey: 'autoFrom', action: 'AutoFrom', type: 'text' },
+    autoTo: { stateKey: 'autoTo', action: 'AutoTo', type: 'text' }
+};
 
 function esc(value) {
     return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
+
+function hasOwn(obj, key) {
+    return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
 }
 
 function motionDisplayName(value) {
@@ -249,6 +364,122 @@ function motionDisplayName(value) {
         .trim();
 }
 
+function valuesEqual(a, b, type) {
+    if (type === 'bool') return !!a === !!b;
+    return String(a ?? '') === String(b ?? '');
+}
+
+function setSwitchVisual(element, value, pending = false) {
+    if (!element) return;
+    const on = !!value;
+    element.classList.toggle('on', on);
+    element.classList.toggle('pending', !!pending);
+    element.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
+function savePendingCache() {
+    try {
+        const entries = Array.from(pendingActions.entries()).map(([key, value]) => [key, value]);
+        localStorage.setItem(PENDING_CACHE_KEY, JSON.stringify(entries));
+    } catch (_) {}
+}
+
+function loadPendingCache() {
+    try {
+        const raw = localStorage.getItem(PENDING_CACHE_KEY);
+        if (!raw) return;
+        const entries = JSON.parse(raw);
+        if (!Array.isArray(entries)) return;
+        const now = Date.now();
+        for (const entry of entries) {
+            if (!Array.isArray(entry) || entry.length !== 2) continue;
+            const [key, value] = entry;
+            if (!value || typeof value !== 'object') continue;
+            if ((now - Number(value.ts || 0)) > PENDING_ACTION_TIMEOUT_MS) continue;
+            pendingActions.set(String(key), value);
+        }
+        savePendingCache();
+    } catch (_) {}
+}
+
+function clearPending(key) {
+    if (pendingActions.delete(key)) savePendingCache();
+}
+
+function setPending(key, desired, type = 'bool') {
+    pendingActions.set(key, { desired, type, ts: Date.now() });
+    savePendingCache();
+    window.setTimeout(() => {
+        const pending = pendingActions.get(key);
+        if (!pending || pending.desired !== desired) return;
+        if ((Date.now() - pending.ts) < PENDING_ACTION_TIMEOUT_MS) return;
+        clearPending(key);
+        render();
+        requestFreshState(true);
+    }, PENDING_ACTION_TIMEOUT_MS + 80);
+}
+
+function effectiveValue(key, serverValue, type = 'bool') {
+    const pending = pendingActions.get(key);
+    if (!pending) return { value: serverValue, pending: false };
+    if (valuesEqual(serverValue, pending.desired, type)) {
+        clearPending(key);
+        return { value: serverValue, pending: false };
+    }
+    if ((Date.now() - pending.ts) <= PENDING_ACTION_TIMEOUT_MS) {
+        return { value: pending.desired, pending: true };
+    }
+    clearPending(key);
+    return { value: serverValue, pending: false };
+}
+
+function sendOptimisticAction(key, action, desired, type = 'bool') {
+    const currentPending = pendingActions.get(key);
+    if (currentPending && valuesEqual(currentPending.desired, desired, type) && (Date.now() - currentPending.ts) <= PENDING_ACTION_TIMEOUT_MS) {
+        return; // change + blur bzw. doppelter Touch: keinen zweiten Bus-/Modulauftrag erzeugen
+    }
+    setPending(key, desired, type);
+    render(); // optimistische Anzeige sofort festhalten, bevor eine alte Push-Meldung eintreffen kann
+    try {
+        requestAction(action, desired);
+    } catch (_) {
+        /* requestAction liefert laut HTML-SDK keinen synchronen Rueckgabewert.
+           Die Anzeige bleibt deshalb bis zur bestaetigten Modulmeldung pending. */
+    }
+    window.setTimeout(() => requestFreshState(true), PENDING_REFRESH_DELAY_MS);
+}
+
+function requestCoreToggle(controlID) {
+    const cfg = CORE_CONTROL_MAP[controlID];
+    const el = document.getElementById(controlID);
+    if (!cfg || !el) return;
+    const current = el.getAttribute('aria-checked') === 'true';
+    const desired = !current;
+    setSwitchVisual(el, desired, true);
+    sendOptimisticAction(controlID, cfg.action, desired, cfg.type);
+}
+
+function requestRoomToggle(button) {
+    if (!button) return;
+    const ident = String(button.dataset.ident || '');
+    if (!ident) return;
+    const key = `room:${ident}`;
+    const current = button.getAttribute('aria-checked') === 'true';
+    const desired = !current;
+    setSwitchVisual(button, desired, true);
+    button.closest('.sensor-row')?.querySelector('.room-dot')?.classList.toggle('enabled', desired);
+    sendOptimisticAction(key, ident, desired, 'bool');
+}
+
+function requestTimeChange(controlID) {
+    const cfg = CORE_CONTROL_MAP[controlID];
+    const el = document.getElementById(controlID);
+    if (!cfg || !el) return;
+    const desired = String(el.value || '');
+    if (!/^\d{2}:\d{2}$/.test(desired)) return;
+    sendOptimisticAction(controlID, cfg.action, desired, 'text');
+}
+
 function remaining(deadline) {
     const d = Number(deadline || 0);
     if (d <= 0) return 0;
@@ -256,6 +487,7 @@ function remaining(deadline) {
 }
 
 function statusText() {
+    if (!haveValidState && !hasOwn(state, 'status')) return 'Status wird geladen …';
     if (state.alarmActive) {
         const rest = remaining(state.alarmQuietDeadline);
         if (Number(state.alarmQuietDeadline || 0) > 0) {
@@ -267,7 +499,7 @@ function statusText() {
     if (rearm > 0 && String(state.status || '').toLowerCase().includes('wieder scharf')) {
         return `Wieder scharf in ${rearm} s`;
     }
-    return state.status || '–';
+    return String(state.status || '–');
 }
 
 function cleanLastAlarm(value) {
@@ -279,33 +511,149 @@ function cleanLastAlarm(value) {
         .replace(/\s+[–-]\s+manual-off$/i, '');
 }
 
+function parsePayload(input, depth = 0) {
+    if (depth > 5 || input == null) return null;
+    if (typeof input === 'string') {
+        const text = input.trim();
+        if (!text) return null;
+        try { return parsePayload(JSON.parse(text), depth + 1); } catch (_) { return null; }
+    }
+    if (typeof input !== 'object' || Array.isArray(input)) return null;
+
+    if (KNOWN_KEYS.some(key => hasOwn(input, key))) return input;
+
+    /* Unterschiedliche WebView-/RPC-Versionen koennen den eigentlichen Wert
+       in einem Wrapper liefern. Leere/technische Wrapper werden ignoriert und
+       duerfen den letzten gueltigen Zustand niemals loeschen. */
+    for (const key of ['Value', 'value', 'Payload', 'payload', 'Data', 'data']) {
+        if (hasOwn(input, key)) {
+            const nested = parsePayload(input[key], depth + 1);
+            if (nested) return nested;
+        }
+    }
+    return null;
+}
+
+function mergeState(incoming) {
+    const payload = parsePayload(incoming);
+    if (!payload) return false;
+
+    let changed = false;
+    for (const key of KNOWN_KEYS) {
+        if (!hasOwn(payload, key)) continue;
+        const value = payload[key];
+        if ((key === 'sensors' || key === 'motionSensors' || key === 'history') && !Array.isArray(value)) {
+            continue; // fehlerhafte Teilnachricht darf eine bestehende Liste nicht leeren
+        }
+        state[key] = value;
+        changed = true;
+    }
+    if (!changed) return false;
+
+    haveValidState = true;
+    saveStateCache();
+    return true;
+}
+
+function saveStateCache() {
+    try {
+        localStorage.setItem(STATE_CACHE_KEY, JSON.stringify({ ts: Date.now(), state }));
+    } catch (_) {}
+}
+
+function loadStateCache() {
+    try {
+        const raw = localStorage.getItem(STATE_CACHE_KEY);
+        if (!raw) return;
+        const cached = JSON.parse(raw);
+        if (!cached || typeof cached !== 'object' || !cached.state) return;
+        if ((Date.now() - Number(cached.ts || 0)) > STATE_CACHE_MAX_AGE_MS) return;
+        mergeState(cached.state);
+    } catch (_) {}
+}
+
 function renderStatusOnly() {
     const el = document.getElementById('status');
     el.textContent = statusText();
     el.classList.toggle('alarm', !!state.alarmActive);
+    el.classList.toggle('loading', !haveValidState && !hasOwn(state, 'status'));
+}
+
+function renderCore() {
+    if (hasOwn(state, 'arm')) {
+        const resolved = effectiveValue('arm', state.arm, 'bool');
+        setSwitchVisual(document.getElementById('arm'), resolved.value, resolved.pending);
+    }
+    if (hasOwn(state, 'automatic')) {
+        const resolved = effectiveValue('automatic', state.automatic, 'bool');
+        setSwitchVisual(document.getElementById('automatic'), resolved.value, resolved.pending);
+    }
+    for (const id of ['autoFrom', 'autoTo']) {
+        const stateKey = CORE_CONTROL_MAP[id].stateKey;
+        const input = document.getElementById(id);
+        if (!input || !hasOwn(state, stateKey) || typeof state[stateKey] !== 'string') continue;
+        const resolved = effectiveValue(id, state[stateKey], 'text');
+        /* Einen offenen mobilen Zeitdialog niemals durch eine parallel eintreffende
+           Visualisierungsmeldung ueberschreiben. */
+        if (document.activeElement !== input || resolved.pending) input.value = resolved.value;
+        input.classList.toggle('pending-input', resolved.pending);
+    }
+    if (hasOwn(state, 'alarmActive')) document.getElementById('alarmBox').classList.toggle('active', !!state.alarmActive);
+    if (hasOwn(state, 'firstTrigger')) document.getElementById('firstTrigger').textContent = state.firstTrigger || '–';
+    if (hasOwn(state, 'lastMovement')) document.getElementById('lastMovement').textContent = state.lastMovement || '–';
+    if (hasOwn(state, 'motionCount')) document.getElementById('motionCount').textContent = String(state.motionCount ?? 0);
+    if (hasOwn(state, 'lastAlarm')) document.getElementById('lastAlarm').textContent = cleanLastAlarm(state.lastAlarm);
+    renderStatusOnly();
 }
 
 function renderRooms() {
+    if (!Array.isArray(state.sensors)) return;
+    const signature = JSON.stringify(state.sensors);
+    if (signature === roomsSignature) {
+        /* Auch ohne Serveraenderung kann ein lokaler pending-Zustand neu zu zeichnen sein. */
+        for (const sensor of state.sensors) {
+            const button = Array.from(document.querySelectorAll('.room-switch')).find(el => String(el.dataset.ident || '') === String(sensor.ident || ''));
+            if (!button) continue;
+            const resolved = effectiveValue(`room:${sensor.ident}`, !!sensor.enabled, 'bool');
+            setSwitchVisual(button, resolved.value, resolved.pending);
+            button.closest('.sensor-row')?.querySelector('.room-dot')?.classList.toggle('enabled', !!resolved.value);
+        }
+        return;
+    }
+    roomsSignature = signature;
+
     const host = document.getElementById('rooms');
-    const sensors = Array.isArray(state.sensors) ? state.sensors : [];
+    const panel = document.getElementById('roomsPanel');
+    const oldScroll = Number(panel?.scrollTop || 0);
+    const sensors = state.sensors;
     if (!sensors.length) {
         host.innerHTML = '<div class="muted">Keine GUS konfiguriert</div>';
         return;
     }
-    host.innerHTML = sensors.map(sensor => `
+    host.innerHTML = sensors.map(sensor => {
+        const resolved = effectiveValue(`room:${sensor.ident}`, !!sensor.enabled, 'bool');
+        return `
         <div class="sensor-row ${sensor.motion ? 'motion' : ''}">
-            <div class="sensor-name"><span class="room-dot ${sensor.enabled ? 'enabled' : ''}"></span>${esc(sensor.name)}</div>
-            <label class="switch">
-                <input type="checkbox" ${sensor.enabled ? 'checked' : ''}
-                    onchange="requestAction('${esc(sensor.ident)}', this.checked)">
-                <span class="slider"></span>
-            </label>
-        </div>`).join('');
+            <div class="sensor-name"><span class="room-dot ${resolved.value ? 'enabled' : ''}"></span>${esc(sensor.name)}</div>
+            <button type="button" class="switch-button room-switch ${resolved.value ? 'on' : ''} ${resolved.pending ? 'pending' : ''}"
+                role="switch" aria-checked="${resolved.value ? 'true' : 'false'}"
+                data-ident="${esc(sensor.ident)}" aria-label="${esc(sensor.name)} überwachen"
+                onclick="requestRoomToggle(this)"><span class="switch-knob"></span></button>
+        </div>`;
+    }).join('');
+    if (panel) requestAnimationFrame(() => { panel.scrollTop = oldScroll; });
 }
 
 function renderMotionSensors() {
+    if (!Array.isArray(state.motionSensors)) return;
+    const signature = JSON.stringify(state.motionSensors);
+    if (signature === motionSignature) return;
+    motionSignature = signature;
+
     const host = document.getElementById('motionSensors');
-    const sensors = Array.isArray(state.motionSensors) ? state.motionSensors : [];
+    const panel = document.getElementById('motionPanel');
+    const oldScroll = Number(panel?.scrollTop || 0);
+    const sensors = state.motionSensors;
     if (!sensors.length) {
         host.innerHTML = '<div class="muted">Keine Bewegungsmelder gefunden</div>';
         return;
@@ -320,11 +668,19 @@ function renderMotionSensors() {
             <span class="motion-status-state">${active ? 'Bewegung' : 'Ruhe'}</span>
         </div>`;
     }).join('');
+    if (panel) requestAnimationFrame(() => { panel.scrollTop = oldScroll; });
 }
 
 function renderHistory() {
+    if (!Array.isArray(state.history)) return;
+    const signature = JSON.stringify(state.history);
+    if (signature === historySignature) return;
+    historySignature = signature;
+
     const host = document.getElementById('history');
-    const history = Array.isArray(state.history) ? state.history : [];
+    const panel = document.getElementById('protocolPanel');
+    const oldScroll = Number(panel?.scrollTop || 0);
+    const history = state.history;
     if (!history.length) {
         host.innerHTML = '<div class="history-row muted">Keine Bewegung gespeichert</div>';
         return;
@@ -334,19 +690,11 @@ function renderHistory() {
             <div>${esc(item.name)}</div>
             <div class="history-time">${esc(item.time)}</div>
         </div>`).join('');
+    if (panel) requestAnimationFrame(() => { panel.scrollTop = oldScroll; });
 }
 
 function render() {
-    document.getElementById('arm').checked = !!state.arm;
-    document.getElementById('automatic').checked = !!state.automatic;
-    document.getElementById('autoFrom').value = state.autoFrom || '22:00';
-    document.getElementById('autoTo').value = state.autoTo || '06:00';
-    document.getElementById('alarmBox').classList.toggle('active', !!state.alarmActive);
-    document.getElementById('firstTrigger').textContent = state.firstTrigger || '–';
-    document.getElementById('lastMovement').textContent = state.lastMovement || '–';
-    document.getElementById('motionCount').textContent = String(state.motionCount ?? 0);
-    document.getElementById('lastAlarm').textContent = cleanLastAlarm(state.lastAlarm);
-    renderStatusOnly();
+    renderCore();
     renderRooms();
     renderMotionSensors();
     renderHistory();
@@ -354,18 +702,126 @@ function render() {
 
 function handleMessage(data) {
     try {
-        state = (typeof data === 'string') ? JSON.parse(data) : data;
-        if (!state || typeof state !== 'object') return;
+        if (!mergeState(data)) return; // leere/ungueltige Teilnachricht: vorhandene Anzeige bleibt stehen
         render();
     } catch (_) {}
 }
 
-document.getElementById('arm').addEventListener('change', e => requestAction('Arm', e.target.checked));
-document.getElementById('automatic').addEventListener('change', e => requestAction('Automatic', e.target.checked));
-document.getElementById('autoFrom').addEventListener('change', e => requestAction('AutoFrom', e.target.value));
-document.getElementById('autoTo').addEventListener('change', e => requestAction('AutoTo', e.target.value));
+function saveUIState() {
+    try {
+        const panels = {};
+        for (const id of ['roomsAccordion', 'motionAccordion', 'protocolAccordion']) {
+            const el = document.getElementById(id);
+            const panel = el ? el.querySelector('.accordion-panel') : null;
+            panels[id] = {
+                open: !!el?.classList.contains('open'),
+                scrollTop: Number(panel?.scrollTop || 0)
+            };
+        }
+        localStorage.setItem(UI_CACHE_KEY, JSON.stringify({
+            scrollTop: Number(document.getElementById('scrollPane')?.scrollTop || 0),
+            panels
+        }));
+    } catch (_) {}
+}
 
+function restoreUIState() {
+    try {
+        const raw = localStorage.getItem(UI_CACHE_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        const panels = saved?.panels || {};
+        for (const id of ['roomsAccordion', 'motionAccordion', 'protocolAccordion']) {
+            const el = document.getElementById(id);
+            const button = el?.querySelector('.accordion-toggle');
+            const panel = el?.querySelector('.accordion-panel');
+            const cfg = panels[id] || {};
+            if (cfg.open) {
+                el.classList.add('open');
+                button?.setAttribute('aria-expanded', 'true');
+            }
+            if (panel) panel.scrollTop = Number(cfg.scrollTop || 0);
+        }
+        const pane = document.getElementById('scrollPane');
+        if (pane) pane.scrollTop = Number(saved?.scrollTop || 0);
+    } catch (_) {}
+}
+
+function toggleAccordion(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const open = !el.classList.contains('open');
+    el.classList.toggle('open', open);
+    const button = el.querySelector('.accordion-toggle');
+    button?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    saveUIState();
+}
+
+function requestFreshState(force = false) {
+    const now = Date.now();
+    if (!force && (now - lastRefreshRequest) < 1500) return;
+    lastRefreshRequest = now;
+    try { requestAction('RefreshVisualization', true); } catch (_) {}
+}
+
+for (const button of document.querySelectorAll('.accordion-toggle')) {
+    button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleAccordion(button.dataset.accordion);
+    });
+}
+
+document.getElementById('arm').addEventListener('click', e => { e.preventDefault(); requestCoreToggle('arm'); });
+document.getElementById('automatic').addEventListener('click', e => { e.preventDefault(); requestCoreToggle('automatic'); });
+for (const id of ['autoFrom', 'autoTo']) {
+    const input = document.getElementById(id);
+    input.addEventListener('change', () => requestTimeChange(id));
+    input.addEventListener('blur', () => { requestTimeChange(id); renderCore(); });
+}
+document.getElementById('scrollPane').addEventListener('scroll', () => { window.clearTimeout(window.__alarmUISave); window.__alarmUISave = window.setTimeout(saveUIState, 150); }, { passive: true });
+for (const panel of document.querySelectorAll('.accordion-panel')) {
+    panel.addEventListener('scroll', () => { window.clearTimeout(window.__alarmUISave); window.__alarmUISave = window.setTimeout(saveUIState, 150); }, { passive: true });
+
+    /* Fallback fuer Symcon-App-WebViews, die verschachteltes CSS-Scrolling
+       nicht sauber an die innere Flaeche weiterreichen. Nur echte vertikale
+       Wischbewegungen greifen ein; Tippen auf Schalter/Buttons bleibt unberuehrt. */
+    let touchY = null;
+    let dragging = false;
+    panel.addEventListener('touchstart', event => {
+        if (event.touches.length !== 1) return;
+        touchY = event.touches[0].clientY;
+        dragging = false;
+    }, { passive: true });
+    panel.addEventListener('touchmove', event => {
+        if (touchY == null || event.touches.length !== 1) return;
+        const y = event.touches[0].clientY;
+        const delta = touchY - y;
+        if (!dragging && Math.abs(delta) < 6) return;
+        dragging = true;
+        const canScroll = panel.scrollHeight > panel.clientHeight + 1;
+        if (canScroll) {
+            panel.scrollTop += delta;
+            if (event.cancelable) event.preventDefault();
+        }
+        touchY = y;
+    }, { passive: false });
+    panel.addEventListener('touchend', () => { touchY = null; dragging = false; saveUIState(); }, { passive: true });
+    panel.addEventListener('touchcancel', () => { touchY = null; dragging = false; }, { passive: true });
+}
+window.addEventListener('beforeunload', () => { saveUIState(); saveStateCache(); savePendingCache(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) requestFreshState(); });
+
+/* Reihenfolge ist absichtlich: kurzlebiger Cache verhindert Flackern bei einem
+   WebView-Rebuild; der vom Modul eingebettete Initialzustand ueberschreibt ihn
+   sofort, sofern er vollstaendig vorliegt. Anschliessend wird genau einmal ein
+   rein lesender Refresh angefordert. */
+loadStateCache();
+loadPendingCache();
+mergeState(INITIAL_STATE);
 render();
+restoreUIState();
+setTimeout(requestFreshState, 120);
 setInterval(renderStatusOnly, 1000);
 </script>
 </body>

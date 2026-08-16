@@ -1,5 +1,21 @@
 # LCN Alarmanlage für IP-Symcon 9
 
+## Version 0.1.21
+
+0.1.21 korrigiert ausschließlich die mobile Bedienung der HTML-Kachel. Die bisherigen nativen, unsichtbaren Checkboxen der Schiebeschalter wurden durch eigene touch-stabile Schalter-Buttons ersetzt. Beim Antippen wird der gewünschte Zustand sofort lokal dargestellt und bis zur bestätigten Rückmeldung des Moduls geschützt. Ältere oder parallel eintreffende Visualisierungsnachrichten können den Schalter daher nicht mehr auf den Ausgangswert zurücksetzen. Bleibt eine Bestätigung aus, wird nach spätestens fünf Sekunden auf den echten Modulzustand zurückgefallen und ein rein lesender Refresh angefordert.
+
+Dasselbe Schutzprinzip gilt für Alarmanlage EIN/AUS, Automatik und alle Raum-/GUS-Schalter. Die Zeitfelder `Scharf ab` und `Unscharf ab` werden während eines geöffneten mobilen Zeitdialogs nicht durch asynchron eintreffende Meldungen überschrieben. Für mobile WebViews gibt es zusätzlich einen Touch-Scroll-Fallback; Scrollpositionen in Überwachte Räume, Status Bewegungsmelder und Protokoll werden bei Datenaktualisierungen erhalten.
+
+`LCNAlarmanlage/module.php`, Alarmkern, GUS-Auswertung, Quittierung, Lichtzustandswiederherstellung, Neustartschutz, E-Mail-Quittierung sowie Samsung-WOL/Alarmvideo bleiben gegenüber 0.1.20 unverändert. Es entstehen keine zusätzlichen Symcon-Variablen, Timer, Properties oder LCN-Abfragen.
+
+## Version 0.1.20
+
+0.1.20 korrigiert gezielt die Smartphone-WebView der 0.1.19, ohne den Alarmkern umzubauen. Die nativen HTML-`details`-Elemente wurden durch eigene Akkordeons ersetzt, weil das Auf-/Zuklappen in der mobilen Symcon-WebView einen Neuaufbau der Kachel auslösen konnte. Jede geöffnete Kategorie besitzt mobil nun ein eigenes begrenztes Touch-Scrollfenster.
+
+Die Visualisierung hält den letzten bestätigten Zustand kurzzeitig lokal vor und verarbeitet eingehende HTML-SDK-Nachrichten nur noch feldweise. Leere, unvollständige oder technisch verpackte Zwischenmeldungen dürfen Status, Uhrzeiten, GUS-Listen, Bewegungsmelder oder Protokoll nicht mehr auf Platzhalter bzw. Modul-Defaultwerte zurücksetzen. Ein rein lesender `RefreshVisualization`-Aufruf fordert nach einem WebView-Reload einmalig den vollständigen Istzustand an; er verändert weder Alarmzustand noch Variablen, Timer, LCN-Status oder Aktoren.
+
+Alarmkern, GUS-Alarmlogik, Lichtzustandswiederherstellung, Quittierung, Neustartschutz, E-Mail-Quittierung sowie Samsung-WOL/Alarmvideo bleiben gegenüber 0.1.19 unverändert. Es entstehen keine zusätzlichen Symcon-Variablen und kein neues Polling.
+
 ## Version 0.1.19
 
 0.1.19 ist eine reine, rollbackfähige Visualisierungskorrektur auf Basis von 0.1.18. Für Smartphone-WebViews wird die komplette HTML-Kachel nun in einem expliziten Touch-Scroll-Container dargestellt (`overflow-y: auto`, `-webkit-overflow-scrolling: touch`, `touch-action: pan-y`). Lange aufgeklappte Bereiche wie **Überwachte Räume**, **Status Bewegungsmelder** und **Protokoll** lassen sich dadurch in der Symcon-App vertikal scrollen. Auf schmalen Displays besitzt die Historie bewusst kein eigenes verschachteltes Scrollfenster mehr; sie wächst in den Hauptscrollbereich hinein. Alle Bedienelemente und JavaScript-Funktionen sind gegenüber 0.1.18 unverändert. Alarmkern, GUS-Auswertung, Lichtzustandswiederherstellung, WOL/Alarmvideo, Neustartschutz, E-Mail-Quittierung, Variablen und Polling-Verhalten bleiben unverändert.

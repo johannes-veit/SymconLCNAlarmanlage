@@ -407,6 +407,14 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         switch ($Ident) {
+            case 'RefreshVisualization':
+                // Rein lesender HTML-SDK-Refresh. Veraendert weder Alarmzustand noch
+                // Variablen, Timer, LCN-Status oder Aktoren. Mobile WebViews koennen
+                // damit nach einem eigenen Reload sofort den vollstaendigen Iststand
+                // anfordern, ohne auf die naechste Zustandsaenderung zu warten.
+                $this->PushVisualizationState();
+                return;
+
             case 'Arm':
                 $armed = (bool) $Value;
                 $this->WriteAttributeInteger('ManualOverride', $armed ? self::OVERRIDE_ON : self::OVERRIDE_OFF);
