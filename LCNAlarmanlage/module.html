@@ -8,19 +8,20 @@
 * { box-sizing: border-box; }
 body {
     margin: 0;
-    padding: 10px 12px 14px;
+    padding: 8px 10px 12px;
     background: transparent;
     color: inherit;
-    font-family: inherit;
+    font-family: Poppins, "Segoe UI", Arial, sans-serif;
     font-size: 14px;
+    line-height: 1.45;
 }
-.wrap { display: flex; flex-direction: column; gap: 9px; }
+.wrap { display: flex; flex-direction: column; gap: 7px; }
 .row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    min-height: 32px;
+    min-height: 30px;
 }
 .label { min-width: 0; }
 .value { text-align: right; overflow-wrap: anywhere; }
@@ -75,7 +76,7 @@ details {
     padding-top: 5px;
 }
 summary {
-    cursor: pointer; user-select: none; font-weight: 600; padding: 6px 1px;
+    cursor: pointer; user-select: none; font-weight: 500; padding: 6px 1px;
     list-style: none;
 }
 summary::-webkit-details-marker { display: none; }
@@ -87,11 +88,17 @@ details[open] > summary:before { transform: rotate(90deg); }
     min-height: 34px; border-bottom: 1px solid rgba(128,128,128,.12);
 }
 .sensor-name { min-width: 0; overflow-wrap: anywhere; }
-.motion-dot {
-    display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px;
-    background: rgba(128,128,128,.35); vertical-align: 1px;
+.room-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 8px;
+    background: rgba(128,128,128,.42);
+    vertical-align: 1px;
 }
-.motion-dot.active { background: #e53935; box-shadow: 0 0 0 3px rgba(229,57,53,.12); }
+.room-dot.enabled { background: #16b6a7; }
+.sensor-row.motion .sensor-name { font-weight: 500; }
 .protocol-grid { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(0, 1.5fr); gap: 7px 12px; }
 .protocol-grid .pv { text-align: right; overflow-wrap: anywhere; }
 .history-title { margin-top: 12px; margin-bottom: 6px; font-weight: 600; }
@@ -183,6 +190,15 @@ function statusText() {
     return state.status || '–';
 }
 
+function cleanLastAlarm(value) {
+    const text = String(value || '–');
+    return text
+        .replace(/\s+[–-]\s+acknowledged(?:\/[^\s]+)?$/i, '')
+        .replace(/\s+[–-]\s+automatic-afterrun$/i, '')
+        .replace(/\s+[–-]\s+automatic-timeout$/i, '')
+        .replace(/\s+[–-]\s+manual-off$/i, '');
+}
+
 function renderStatusOnly() {
     const el = document.getElementById('status');
     el.textContent = statusText();
@@ -197,8 +213,8 @@ function renderRooms() {
         return;
     }
     host.innerHTML = sensors.map(sensor => `
-        <div class="sensor-row">
-            <div class="sensor-name"><span class="motion-dot ${sensor.motion ? 'active' : ''}"></span>${esc(sensor.name)}</div>
+        <div class="sensor-row ${sensor.motion ? 'motion' : ''}">
+            <div class="sensor-name"><span class="room-dot ${sensor.enabled ? 'enabled' : ''}"></span>${esc(sensor.name)}</div>
             <label class="switch">
                 <input type="checkbox" ${sensor.enabled ? 'checked' : ''}
                     onchange="requestAction('${esc(sensor.ident)}', this.checked)">
@@ -230,7 +246,7 @@ function render() {
     document.getElementById('firstTrigger').textContent = state.firstTrigger || '–';
     document.getElementById('lastMovement').textContent = state.lastMovement || '–';
     document.getElementById('motionCount').textContent = String(state.motionCount ?? 0);
-    document.getElementById('lastAlarm').textContent = state.lastAlarm || '–';
+    document.getElementById('lastAlarm').textContent = cleanLastAlarm(state.lastAlarm);
     renderStatusOnly();
     renderRooms();
     renderHistory();

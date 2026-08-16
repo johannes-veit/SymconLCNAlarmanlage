@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.11
+
+- Vollständiges Direktupdate auf Basis von 0.1.10; ein vorheriges Installieren von 0.1.10 ist nicht erforderlich.
+- Enthält den JSON-Kompatibilitätsfix aus 0.1.10 für `UpdateVisualizationValue()` und behebt damit den v0.1.9-RPC-Typfehler bei ApplyChanges sowie bei Kachelaktionen wie EIN→AUS.
+- Kompakte HTML-Kachel optisch an die vorhandenen Symcon-Module angepasst: Poppins/Segoe-UI-Schriftstack, kompaktere Abstände, keine zusätzliche eigene Kachelüberschrift.
+- Unter **Überwachte Räume** zeigt der Punkt jetzt ausschließlich den Überwachungszustand: grün = GUS aktiv, grau = GUS deaktiviert.
+- Technische Alarm-Endgründe wie `acknowledged` werden nicht mehr bei **Letzter Alarm** angezeigt; sie bleiben intern in der Sessionhistorie erhalten.
+- Aufbau mit **Überwachte Räume**, **Protokoll** und scrollbar begrenzter **Historie** bleibt unverändert.
+- Keine Änderung an Alarm-Nachlauf, GUS-Auswertung, Paniklicht, Quittierung, Push, E-Mail, Samsung-TV oder Wieder-scharf-Logik.
+
+## 0.1.10
+
+- Reiner Kompatibilitätsfix für die HTML-SDK-Kachel in Symcon 9.
+- `UpdateVisualizationValue()` erhält den komplexen Zustand jetzt JSON-codiert statt als PHP-Array.
+- Behebt `Cannot auto-convert value for parameter Value (Type is not supported)` beim Übernehmen von Instanzeigenschaften.
+- Keine Änderung an Alarm-Nachlauf, GUS, Paniklicht, Quittierung, Push, E-Mail oder Samsung-TV.
+
 ## 0.1.9
 
 - **Alarmdauer ist jetzt Nachlaufzeit:** kein Alarm-Endtimer mehr ab dem ersten Trigger.

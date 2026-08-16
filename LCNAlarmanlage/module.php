@@ -1730,11 +1730,12 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetValue('MotionLog', ($lines === []) ? '-' : implode("\n", $lines));
 
         if ($last !== []) {
-            $reason = (string) ($last['endReason'] ?? '');
+            // Technische Endgründe (z. B. "acknowledged") bleiben intern in LastSession
+            // erhalten, werden in der Benutzeroberfläche aber bewusst nicht angezeigt.
             $endedAt = (float) ($last['endedAt'] ?? 0);
             $this->SetValue(
                 'LastAlarm',
-                (string) ($last['id'] ?? '-') . (($endedAt > 0) ? ' – ' . $this->FormatTimestamp($endedAt) : '') . (($reason !== '') ? ' – ' . $reason : '')
+                (string) ($last['id'] ?? '-') . (($endedAt > 0) ? ' – ' . $this->FormatTimestamp($endedAt) : '')
             );
         }
 
@@ -1796,7 +1797,18 @@ class LCNAlarmanlage extends IPSModuleStrict
     private function PushVisualizationState(): void
     {
         try {
-            $this->UpdateVisualizationValue($this->BuildVisualizationState());
+            // Komplexe PHP-Arrays werden von der Symcon-RPC-Grenze nicht in allen
+            // Laufzeitkonstellationen automatisch konvertiert. Die HTML-Kachel
+            // bekommt deshalb bewusst einen JSON-String. handleMessage() in
+            // module.html dekodiert Strings bereits mit JSON.parse().
+            $payload = json_encode(
+                $this->BuildVisualizationState(),
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+            );
+            if ($payload === false) {
+                throw new RuntimeException('Visualisierungszustand konnte nicht als JSON codiert werden');
+            }
+            $this->UpdateVisualizationValue($payload);
         } catch (Throwable $e) {
             // Die individuelle Darstellung ist rein optional. Ein Darstellungsfehler
             // darf niemals den Alarmkern oder eine Aktoraktion beeinflussen.

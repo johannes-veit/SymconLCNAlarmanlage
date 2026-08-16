@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Testversion 0.1.9: Alarmdauer als Nachlaufzeit nach letzter Bewegung, kompakte Kachel mit aufklappbaren überwachten Räumen und Protokoll."
+            "label": "Testversion 0.1.11: vollständiges Direktupdate ab 0.1.9; enthält den HTML-SDK-Kompatibilitätsfix aus 0.1.10 und die optisch angepasste kompakte Kachel. Alarm-, TV-, GUS-, Panik-, Push-, E-Mail- und Nachlauflogik bleiben funktional unverändert."
         },
         {
             "type": "List",

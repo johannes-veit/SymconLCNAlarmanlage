@@ -1,8 +1,21 @@
 # LCN Alarmanlage für IP-Symcon 9
 
-## Version 0.1.9
+## Version 0.1.11
 
-Version 0.1.9 baut auf dem funktional getesteten Stand 0.1.8 auf. Die Alarmdauer arbeitet jetzt als **Nachlaufzeit nach der letzten Bewegung**. Zusätzlich wird die Instanz in der Kachelvisualisierung kompakter über das offizielle HTML-SDK dargestellt; die nativen Statusvariablen und Aktionen bleiben als Fallback erhalten.
+Version 0.1.11 ist ein **vollständiges Direktupdate ab 0.1.9**. Version 0.1.10 muss vorher nicht installiert werden. Enthalten sind sowohl der JSON-Kompatibilitätsfix der HTML-SDK-Kachel aus 0.1.10 als auch die optische Anpassung der kompakten Kachel.
+
+Die Funktionslogik von Alarm-Nachlauf, GUS, Paniklicht, Quittierung, Push, E-Mail und Samsung-TV bleibt gegenüber 0.1.10 unverändert.
+
+### Visuelle Änderungen 0.1.11
+
+- keine zusätzliche eigene Überschrift innerhalb der HTML-Kachel; die Kachelbezeichnung kommt ausschließlich von Symcon
+- Schriftstack `Poppins / Segoe UI / Arial` passend zur übrigen Visualisierung
+- kompaktere Abstände
+- **Überwachte Räume** bleibt aufklappbar
+- Punkt vor jedem Raum: **grün = überwacht/aktiv**, **grau = deaktiviert**
+- **Protokoll** bleibt aufklappbar
+- **Historie** bleibt in einem höhenbegrenzten, scrollbareren Bereich
+- technische Endgründe wie `acknowledged` werden bei **Letzter Alarm** nicht mehr angezeigt
 
 ### Alarmquellen
 
