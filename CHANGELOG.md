@@ -124,3 +124,11 @@
 - bei aktiven GUS: „Warte auf freie Bewegungsmelder“
 - neue Bewegung während Countdown stoppt diesen und startet ihn nach erneuter Freimeldung neu
 - automatisches Alarmende nutzt denselben Wieder-Scharf-Ablauf
+
+## 0.1.13
+- WOL-Pfad bleibt unverändert: sofort `SamsungTizen_WakeUp()`, einmaliger Retry nach 5 s.
+- Fehler in der TV-Nachlaufsteuerung behoben: `TVOffCheck` sendet keine wiederholten `KEY_POWER`-Befehle mehr.
+- War der TV beim Alarmende noch nicht als EIN bestätigt, wird kein später Abschaltauftrag hinterlassen.
+- Wurde der vom Alarm gestartete TV bereits als EIN bestätigt, erfolgt beim Alarmende maximal ein unmittelbarer AUS-Befehl; nach 10 s wird nur noch der Status kontrolliert.
+- Dadurch kann die Phase „Wieder scharf in …“ keinen später manuell eingeschalteten TV mehr abschalten.
+- HTML-Kachel bleibt funktional identisch zu 0.1.11; Datei erhält lediglich einen Versionsmarker, um einen Frontend-Cache sicher zu aktualisieren.

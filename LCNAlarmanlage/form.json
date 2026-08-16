@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Version 0.1.12: integriert den vollständig getesteten Samsung-Alarmvideo-Pfad aus Testmodul 0.2.6 direkt in die Alarmanlage. Alarmkern, GUS, Paniklicht, Quittierung, Push, E-Mail, Nachlauf und Wieder-scharf-Logik bleiben unverändert."
+            "label": "Version 0.1.13: korrigiert ausschließlich die Samsung-TV-Nachlaufsteuerung. WOL bleibt unverändert wie in 0.1.11/Alarmvideo-Test 0.2.6; nach Alarmende gibt es keinen wiederholten AUS-Befehl mehr. Die kompakte HTML-Kachel aus 0.1.11 mit aufklappbaren Bereichen „Überwachte Räume“ und „Protokoll“ bleibt erhalten."
         },
         {
             "type": "List",

@@ -77,6 +77,10 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterAttributeString('TVOwnerSessionID', '');
         $this->RegisterAttributeInteger('TVWakeAttempts', 0);
         $this->RegisterAttributeInteger('TVLastWakeAt', 0);
+        // Wird nur gesetzt, wenn der TV waehrend der aktuellen Alarm-Session
+        // tatsaechlich als EIN bestaetigt wurde. Verhindert spaete AUS-Befehle
+        // gegen einen manuell eingeschalteten TV nach bereits beendetem Alarm.
+        $this->RegisterAttributeBoolean('TVSeenOnDuringAlarm', false);
         $this->RegisterAttributeInteger('TVOffDeadline', 0);
         $this->RegisterAttributeInteger('TVOffFalseChecks', 0);
 
@@ -776,6 +780,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         if ($this->TVIsOn($config)) {
+            $this->WriteAttributeBoolean('TVSeenOnDuringAlarm', true);
             return;
         }
 
@@ -800,51 +805,36 @@ class LCNAlarmanlage extends IPSModuleStrict
     {
         $this->SetTimerInterval('TVOffCheck', 0);
 
+        // v0.1.13: Dieser Timer ist nur noch eine EINMALIGE Nachkontrolle.
+        // Er darf niemals selbst einen weiteren KEY_POWER-Befehl senden.
+        // Hintergrund: In v0.1.11/0.1.12 konnte die 60-s-Nachkontrolle einen
+        // verspätet gestarteten oder inzwischen manuell eingeschalteten TV erneut
+        // ausschalten. Dadurch sah ein korrekt gesendetes WOL wie ein WOL-Fehler aus.
         $config = $this->ReadTVConfig();
         if (!(bool) ($config['enabled'] ?? false) || !$this->ReadAttributeBoolean('TVOwnedByAlarm')) {
             $this->ClearTVOwnership();
             return;
         }
 
-        // Ein neuer aktiver Alarm hat immer Vorrang. StartTVForAlarm uebernimmt
-        // in diesem Fall die Ownership fuer die neue Session und stoppt den alten
-        // Abschaltauftrag.
+        // Ein neuer aktiver Alarm hat Vorrang; StartTVForAlarm uebernimmt dann
+        // ohnehin die Ownership und beendet den alten Abschaltauftrag.
         $current = $this->ReadSession('CurrentSession');
         if (($current['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE) {
             return;
         }
 
-        $deadline = $this->ReadAttributeInteger('TVOffDeadline');
-        if ($deadline <= 0) {
-            $deadline = time() + 60;
-            $this->WriteAttributeInteger('TVOffDeadline', $deadline);
-        }
+        $isOn = $this->TVIsOn($config);
+        $this->SendDebug(
+            'TV',
+            $isOn
+                ? '10-s-Nachkontrolle: TV meldet noch EIN – kein weiterer AUS-Befehl'
+                : '10-s-Nachkontrolle: TV ist AUS',
+            0
+        );
 
-        if ($this->TVIsOn($config)) {
-            $this->WriteAttributeInteger('TVOffFalseChecks', 0);
-            $this->SendTVPowerOff($config, 'off-check');
-        } else {
-            $falseChecks = $this->ReadAttributeInteger('TVOffFalseChecks') + 1;
-            $this->WriteAttributeInteger('TVOffFalseChecks', $falseChecks);
-
-            // Zwei bestaetigte AUS-Pruefungen und mindestens 30 s Abstand zum
-            // letzten WakeUp verhindern, dass ein bereits gesendetes WOL-Paket
-            // nach zu fruehem Ende der Ueberwachung doch noch einen TV hochfaehrt.
-            $lastWake = $this->ReadAttributeInteger('TVLastWakeAt');
-            $wakeSettled = $lastWake <= 0 || (time() - $lastWake) >= 30;
-            if ($falseChecks >= 2 && $wakeSettled) {
-                $this->ClearTVOwnership();
-                return;
-            }
-        }
-
-        if (time() >= $deadline) {
-            $this->SendDebug('TV', 'AUS-Nachkontrolle nach 60 s beendet', 0);
-            $this->ClearTVOwnership();
-            return;
-        }
-
-        $this->SetTimerInterval('TVOffCheck', 10000);
+        // Unabhaengig vom Ergebnis Ownership jetzt beenden. Es gibt bewusst
+        // keinen zweiten/periodischen KEY_POWER-Befehl mehr.
+        $this->ClearTVOwnership();
     }
 
     /** Startet den integrierten v0.2.6-Videoablauf nach der konfigurierten Verzögerung. */
@@ -934,6 +924,9 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $count = (int) ($stats['count'] ?? 0);
         $bytes = (int) ($stats['bytesSent'] ?? 0);
+        if ($count > 0 && $bytes > 0) {
+            $this->WriteAttributeBoolean('TVSeenOnDuringAlarm', true);
+        }
         if ($count > 0 && $bytes > 0 && $this->ReadAttributeInteger('VideoLoopFallbackPending') === 1) {
             $this->WriteAttributeInteger('VideoLoopFallbackPending', 0);
             $this->WriteAttributeInteger('VideoLoopRearmCount', 0);
@@ -2096,6 +2089,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $alreadyOwned = $this->ReadAttributeBoolean('TVOwnedByAlarm');
         $isOn = $this->TVIsOn($config);
+        $this->WriteAttributeBoolean('TVSeenOnDuringAlarm', $isOn);
 
         if ($alreadyOwned) {
             // TV gehoert bereits einem vorherigen Alarm (z.B. neue Session waehrend
@@ -2165,16 +2159,28 @@ class LCNAlarmanlage extends IPSModuleStrict
             return;
         }
 
-        $this->WriteAttributeInteger('TVOffDeadline', time() + 60);
+        $this->WriteAttributeInteger('TVOffDeadline', 0);
         $this->WriteAttributeInteger('TVOffFalseChecks', 0);
 
-        if ($this->TVIsOn($config)) {
-            $this->SendTVPowerOff($config, $Reason);
+        $isOnNow = $this->TVIsOn($config);
+        $seenOnDuringAlarm = $this->ReadAttributeBoolean('TVSeenOnDuringAlarm');
+
+        // Nur ein waehrend dieser Alarm-Session tatsaechlich bestaetigter/jetzt
+        // sichtbarer TV darf ausgeschaltet werden. Ist der TV beim Alarmende noch
+        // AUS (z.B. WOL-Boot noch nicht abgeschlossen), wird KEIN spaeter
+        // Abschaltauftrag hinterlassen. So kann die Wieder-scharf-Phase niemals
+        // einen spaeter manuell gestarteten TV abschalten.
+        if ($isOnNow || $seenOnDuringAlarm) {
+            if ($isOnNow) {
+                $this->SendTVPowerOff($config, $Reason);
+                // Einmalige reine Statuskontrolle nach 10 s; kein weiterer
+                // KEY_POWER-Befehl aus diesem Timer.
+                $this->SetTimerInterval('TVOffCheck', 10000);
+                return;
+            }
         }
 
-        // Auch wenn der TV aktuell noch AUS meldet, 10-s-Nachkontrolle starten:
-        // ein kurz zuvor gesendeter WakeUp darf nicht nach Alarmende spaet hochfahren.
-        $this->SetTimerInterval('TVOffCheck', 10000);
+        $this->ClearTVOwnership();
     }
 
     private function SendTVWakeUp(array $Config, string $Reason): bool
@@ -2806,6 +2812,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->WriteAttributeString('TVOwnerSessionID', '');
         $this->WriteAttributeInteger('TVWakeAttempts', 0);
         $this->WriteAttributeInteger('TVLastWakeAt', 0);
+        $this->WriteAttributeBoolean('TVSeenOnDuringAlarm', false);
         $this->WriteAttributeInteger('TVOffDeadline', 0);
         $this->WriteAttributeInteger('TVOffFalseChecks', 0);
         $this->WriteAttributeInteger('VideoActive', 0);
