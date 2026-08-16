@@ -149,7 +149,7 @@ class LCNAlarmanlageMediaServer extends IPSModule
 
         if ($mode === '') {
             if ($path === '/' || $path === '/status') {
-                $this->SendHttpText($clientIP, $clientPort, $method, 200, 'OK', "LCN Alarmanlage DLNA MediaServer v0.1.12\n");
+                $this->SendHttpText($clientIP, $clientPort, $method, 200, 'OK', "LCN Alarmanlage DLNA MediaServer v0.1.15\n");
                 return;
             }
             $this->SendHttpError($clientIP, $clientPort, 404, 'Not Found');

@@ -1,4 +1,4 @@
-<!-- LCN Alarmanlage visualization 0.1.14: top spacing corrected -->
+<!-- LCN Alarmanlage visualization 0.1.16: more top spacing + motion detector status -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -9,7 +9,7 @@
 * { box-sizing: border-box; }
 body {
     margin: 0;
-    padding: 30px 10px 12px;
+    padding: 72px 10px 12px;
     background: transparent;
     color: inherit;
     font-family: Poppins, "Segoe UI", Arial, sans-serif;
@@ -100,6 +100,16 @@ details[open] > summary:before { transform: rotate(90deg); }
 }
 .room-dot.enabled { background: #16b6a7; }
 .sensor-row.motion .sensor-name { font-weight: 500; }
+.motion-status-row {
+    display: flex; align-items: center; min-height: 30px;
+    border-bottom: 1px solid rgba(128,128,128,.12);
+}
+.motion-status-row:last-child { border-bottom: 0; }
+.motion-status-dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 9px; background: rgba(128,128,128,.48); vertical-align: 1px;
+}
+.motion-status-dot.active { background: #16b66a; box-shadow: 0 0 0 2px rgba(22,182,106,.10); }
 .protocol-grid { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(0, 1.5fr); gap: 7px 12px; }
 .protocol-grid .pv { text-align: right; overflow-wrap: anywhere; }
 .history-title { margin-top: 12px; margin-bottom: 6px; font-weight: 600; }
@@ -116,7 +126,7 @@ details[open] > summary:before { transform: rotate(90deg); }
 .history-time { opacity: .72; font-size: .9em; margin-top: 2px; }
 .muted { opacity: .65; }
 @media (max-width: 520px) {
-    body { padding: 30px 9px 12px; }
+    body { padding: 72px 9px 12px; }
     .protocol-grid { grid-template-columns: 1fr; gap: 2px; }
     .protocol-grid .pv { text-align: left; margin-bottom: 5px; }
 }
@@ -147,6 +157,11 @@ details[open] > summary:before { transform: rotate(90deg); }
     <details id="roomsDetails">
         <summary>Überwachte Räume</summary>
         <div id="rooms" class="detail-content"></div>
+    </details>
+
+    <details id="motionDetails">
+        <summary>Status Bewegungsmelder</summary>
+        <div id="motionSensors" class="detail-content"></div>
     </details>
 
     <details id="protocolDetails">
@@ -224,6 +239,19 @@ function renderRooms() {
         </div>`).join('');
 }
 
+function renderMotionSensors() {
+    const host = document.getElementById('motionSensors');
+    const sensors = Array.isArray(state.motionSensors) ? state.motionSensors : [];
+    if (!sensors.length) {
+        host.innerHTML = '<div class="muted">Keine Bewegungsmelder gefunden</div>';
+        return;
+    }
+    host.innerHTML = sensors.map(sensor => `
+        <div class="motion-status-row">
+            <div class="sensor-name"><span class="motion-status-dot ${sensor.active ? 'active' : ''}"></span>${esc(sensor.name)}</div>
+        </div>`).join('');
+}
+
 function renderHistory() {
     const host = document.getElementById('history');
     const history = Array.isArray(state.history) ? state.history : [];
@@ -250,6 +278,7 @@ function render() {
     document.getElementById('lastAlarm').textContent = cleanLastAlarm(state.lastAlarm);
     renderStatusOnly();
     renderRooms();
+    renderMotionSensors();
     renderHistory();
 }
 

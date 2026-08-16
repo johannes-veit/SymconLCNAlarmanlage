@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Version 0.1.14: Paniklicht-Zustände werden vor jedem Alarm gespeichert und danach exakt wiederhergestellt. Nur zuvor ausgeschaltete Paniklichter werden bei Alarm eingeschaltet. Quittieren kann automatisch jeder installierte LCN-Lichtschalter aus LCN Light Control 0.6.1 – unabhängig davon, ob er Mitglied der Panikgruppe ist. Die Visualisierung erhält oben zusätzlichen Abstand gegen die Kachelüberschrift."
+            "label": "Version 0.1.16: direkte, rollbackfähige Erweiterung von 0.1.15 mit Rollback-Basis 0.1.14. Alle Alarm-, Licht-, Neustartschutz-, E-Mail-, Samsung-WOL- und Videofunktionen aus 0.1.15 bleiben erhalten. Neu: nochmals mehr Abstand am oberen Rand sowie die aufklappbare Visualisierung „Status Bewegungsmelder“. Dort werden alle konfigurierten GUS und automatisch gefundene native LCN-Bewegungsmelder ohne zusätzliche Symcon-Statusvariablen mit grauem/grünem Istpunkt angezeigt."
         },
         {
             "type": "List",
@@ -136,8 +136,22 @@
             "caption": "E-Mail-Empfänger (; oder , getrennt)"
         },
         {
+            "type": "CheckBox",
+            "name": "EmailAcknowledgeEnabled",
+            "caption": "Quittieren-Button in Alarm-E-Mail"
+        },
+        {
+            "type": "ValidationTextBox",
+            "name": "EmailAcknowledgeBaseURL",
+            "caption": "HTTPS-Basis-URL für E-Mail-Quittierung"
+        },
+        {
             "type": "Label",
-            "label": "Die Empfänger werden nur in der Symcon-Instanzkonfiguration gespeichert und nicht im Modul-Repository. Jede Adresse erhält pro Alarm-Session genau eine E-Mail. Ein Ausfall von Push/SMTP legt den Alarmkern nicht still; Fehler werden protokolliert."
+            "label": "Für den Quittieren-Button eine von außen erreichbare HTTPS-Basis-URL eintragen, z. B. die Symcon-Connect-Adresse ohne /hook-Pfad. Der Link selbst quittiert NICHT sofort: er öffnet zuerst eine Bestätigungsseite. Erst deren POST-Button beendet die aktuelle Alarm-Session. Der zufällige Token ist nur an diese Session gebunden und wird nach Quittierung/Alarmende ungültig."
+        },
+        {
+            "type": "Label",
+            "label": "Die Empfänger werden nur in der Symcon-Instanzkonfiguration gespeichert und nicht im Modul-Repository. Jede Adresse erhält pro Alarm-Session genau eine E-Mail. Ein Ausfall von Push/SMTP oder des optionalen Quittierungslinks legt den Alarmkern nicht still; Fehler werden protokolliert."
         },
         {
             "type": "CheckBox",
@@ -190,6 +204,10 @@
             "label": "Der TV wird beim ersten Alarmtrigger direkt über SamsungTizen_WakeUp() geweckt. Ist er nach 5 s laut vorhandener Statusvariable noch AUS, wird genau ein zweiter WakeUp gesendet. War der TV vor dem Alarm bereits EIN, bleibt er nach Alarmende EIN. Ein vom Alarm gestarteter TV wird nach Alarmende ausgeschaltet und anschließend lokal nachkontrolliert. Die TV-Helfer ändern niemals den Alarmanlagen-Hauptschalter, die Session oder den Wieder-scharf-Countdown."
         },
         {
+            "type": "Label",
+            "label": "Neustartsicherheit: Beim Start werden alle konfigurierten nativen LCN-GUS einmalig über LCN_RequestStatus synchronisiert. Bis die Statuswerte als frische Baseline bestätigt sind, ist keine neue Alarmauslösung möglich. War die Anlage vor dem Symcon-Ausfall EIN, bleibt dieser persistente Zustand erhalten; die Zeitautomatik wird nicht rückwirkend umgeschaltet, sondern setzt an der nächsten regulären Zeitgrenze fort. Ein bereits aktiver Alarm wird nach dem Sensorabgleich fortgeführt."
+        },
+        {
             "type": "NumberSpinner",
             "name": "AlarmDurationSeconds",
             "caption": "Alarm-Nachlaufzeit nach letzter Bewegung (Sekunden)",
@@ -215,7 +233,7 @@
     "actions": [
         {
             "type": "Label",
-            "label": "Kein Alarm-Polling: GUS und LCN-Licht-Status werden über spontane VM_UPDATE-Meldungen ausgewertet. Für Quittierung werden alle Instanzen des Moduls LCNLight automatisch registriert; die Panik-Lichterliste legt nur fest, welche Lichter beim Alarm eingeschaltet werden. Lichtzustände werden pro Alarm-Session gespeichert und danach wiederhergestellt."
+            "label": "Kein Alarm-Polling: Im Normalbetrieb werden GUS und LCN-Licht-Status ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Nur beim Kernel-/Modulstart erfolgt zur Fehlalarmvermeidung ein begrenzter einmaliger LCN_RequestStatus-Abgleich je tatsächlichem LCN-Aktormodul (maximal ein Retry). Für Quittierung werden alle LCNLight-Instanzen automatisch registriert; Lichtzustände werden pro Alarm-Session gespeichert und danach wiederhergestellt. Neue Funktionen verwenden Attribute/Buffer/Timer und erzeugen keine zusätzlichen Statusvariablen."
         }
     ]
 }

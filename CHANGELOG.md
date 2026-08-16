@@ -1,3 +1,31 @@
+## 0.1.16
+
+- direkte, rollbackfähige Erweiterung von 0.1.15; 0.1.14 bleibt die bewährte Rollback-Basis
+- alle Alarm-, Lichtzustands-, Startschutz-, E-Mail-Quittierungs-, Samsung-WOL- und Videoabläufe aus 0.1.15 bleiben unverändert
+- oberer Abstand der HTML-Kachel von 50 px auf 72 px erhöht, damit `Alarmanlage EIN/AUS` sicher unterhalb der Symcon-Kachelüberschrift liegt
+- neue aufklappbare Kategorie **Status Bewegungsmelder** zwischen `Überwachte Räume` und `Protokoll`
+- Statusliste zeigt alle konfigurierten GUS sowie zusätzlich automatisch gefundene native LCN-Unit-Instanzen mit eindeutiger Bewegungsmelder-/GUS-Bezeichnung
+- grauer Punkt = Melder AUS/frei, grüner Punkt = Melder AN/aktiv; die Statusanzeige ist rein lesend
+- für die neue Statusliste werden **keine zusätzlichen Symcon-Statusvariablen** erzeugt; vorhandene native Boolean-Statuswerte werden direkt gelesen
+- nicht als Alarmquelle konfigurierte, automatisch gefundene GUS erhalten nur eine ereignisgesteuerte `VM_UPDATE`-Subscription für die HTML-Anzeige; daraus kann niemals eine Alarm-Session entstehen
+- keine zyklische LCN-Abfrage und kein zusätzliches LCN-Polling für die Statusanzeige
+
+## 0.1.15
+
+- direkte, rollbackfähige Erweiterung der funktionierenden 0.1.14; Bibliotheks-GUID, Modul-GUID, Prefix, bestehende Properties, Variablen-Idents, Lichtlogik sowie Samsung-WOL/Video bleiben erhalten
+- oberer Abstand der HTML-Kachel von 30 px auf 50 px erhöht; `Überwachte Räume` und `Protokoll` bleiben unverändert aufklappbar
+- neuer Startschutz gegen Fehlalarme nach Kernel-/Symcon-Neustart: `RuntimeReady=0`, frische Baseline aller GUS, begrenzter `LCN_RequestStatus()` je realem LCN-Aktormodul und Freigabe erst nach bestätigtem Sensorstatus
+- alle konfigurierten GUS bleiben Teil der Erwartungsliste; kann ein technischer LCN-Pfad nicht eindeutig aufgelöst werden, wird der Sensor nicht stillschweigend als synchronisiert behandelt
+- GUS-Updates während der Startschutzphase aktualisieren nur den Istzustand und können keine neue Alarm-Session auslösen
+- war die Alarmanlage vor dem Ausfall EIN, bleibt dieser persistente Zustand erhalten; `ArmedReady` wird erst nach vollständigem frischem Sensorabgleich und freien überwachten Meldern wieder gesetzt
+- fehlende Start-Rückmeldungen führen fail-safe zu `nicht auslösebereit`, nicht zu blindem Scharfschalten; nach maximal einem Retry gibt es kein periodisches LCN-Polling
+- aktive Alarm-Session bzw. `rearm_wait` wird nach einem Neustart aus den persistenten Sessiondaten fortgeführt, ohne einen historischen Sensorwert als neuen Alarm zu interpretieren
+- Zeitautomatik wird beim Kernelstart nicht rückwirkend neu ausgewertet; der gespeicherte Vor-Ausfall-Zustand bleibt erhalten und die Automatik setzt an der nächsten regulären Zeitgrenze fort
+- optionale sichere E-Mail-Quittierung ergänzt: HTTPS-Basis-URL, 256-Bit-Einmal-Token, persistent nur SHA-256-Hash, Sessionbindung, 24-h-Ablauf und GET-Bestätigungsseite ohne Zustandsänderung; erst POST quittiert
+- Quittierung per E-Mail verwendet denselben zentralen `AcknowledgeAlarmInternal()`-Pfad wie Visu/GT8; Token wird bei Quittierung, automatischem Alarmende und vollständigem Ausschalten ungültig
+- keine zusätzlichen festen Symcon-Statusvariablen; neue technische Zustände liegen ausschließlich in Attributen, Buffern und einem internen Startschutz-Timer
+- interner DLNA-Helfer bleibt ohne sichtbare Variablen; Testmodule sind nach erfolgreicher 0.1.15-Abnahme nicht mehr erforderlich
+
 ## 0.1.14
 
 - basiert direkt auf 0.1.13; Samsung-WOL/Video- und Alarmkern bleiben unverändert

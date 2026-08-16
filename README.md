@@ -1,10 +1,47 @@
 # LCN Alarmanlage für IP-Symcon 9
 
-## Version 0.1.14
+## Version 0.1.16
 
-Version 0.1.14 baut direkt auf 0.1.13 auf. Der bereits erfolgreich getestete Alarmkern sowie Samsung-WOL, Alarmvideo, Endlosschleife und Video-Stopp wurden nicht verändert. Geändert wurden ausschließlich die Lichtlogik und der obere Abstand der Visualisierung.
+0.1.16 enthält vollständig den Stand 0.1.15 und ergänzt ausschließlich die Visualisierung: mehr Abstand oben und die aufklappbare Kategorie **Status Bewegungsmelder**. Die Liste liest vorhandene native GUS-Statuswerte direkt; grün bedeutet aktiv/AN, grau bedeutet frei/AUS. Alle konfigurierten GUS werden gezeigt, zusätzlich werden eindeutig benannte native LCN-Bewegungsmelder automatisch gefunden. Dafür werden keine zusätzlichen sichtbaren Symcon-Variablen erzeugt und es gibt kein zyklisches LCN-Polling. 0.1.14 bleibt die Rollback-Basis.
 
-LCN Light Control **0.6.1** wird über die feste Modul-GUID von `LCNLight` erkannt. Vor jeder Alarmaktion speichert die Alarmanlage den sicher bekannten EIN/AUS-Zustand aller LCN-Lichtinstanzen. Nur ausgewählte Paniklichter, die zu diesem Zeitpunkt AUS sind, werden eingeschaltet. Bei Quittierung, automatischem Alarmende oder vollständigem Ausschalten wird der gespeicherte Vor-Alarm-Zustand aller bekannten LCN-Lichter wiederhergestellt.
+
+## Version 0.1.15
+
+Version 0.1.15 baut direkt auf der funktionierenden **0.1.14** auf und bleibt auf diese Version rollbackfähig. Die real getestete Lichtzustandslogik sowie Samsung-WOL, Alarmvideo, Endlosschleife und Video-Stopp wurden nicht verändert. Ergänzt wurden ausschließlich die Start-/Neustartsicherung, die optionale sichere E-Mail-Quittierung und zusätzlicher Abstand am oberen Rand der Visualisierung.
+
+### Neustart- und Ausfallsicherheit
+
+Der vor einem Symcon-Ausfall gespeicherte Zustand **Alarmanlage EIN/AUS** bleibt erhalten. War die Anlage vorher EIN, wird sie nach dem Neustart nicht blind sofort freigegeben, sondern zunächst in eine Schutzphase gesetzt:
+
+1. `RuntimeReady` bleibt während der Rekonstruktion intern AUS.
+2. Alle konfigurierten GUS werden als aktuelle Baseline eingelesen und für `VM_UPDATE` registriert.
+3. Pro tatsächlichem LCN-Aktormodul wird einmal `LCN_RequestStatus()` angefordert; nach 8 s ist bei fehlenden Rückmeldungen genau ein begrenzter Retry vorgesehen.
+4. Jede GUS-Rückmeldung während dieser Phase aktualisiert nur die Baseline und kann **keinen neuen Alarm** erzeugen.
+5. Erst wenn alle konfigurierten GUS mindestens eine frische Statusbestätigung geliefert haben und alle aktuell überwachten Melder frei sind, wird `ArmedReady` wieder gesetzt.
+6. Fehlt eine frische Rückmeldung, bleibt der Hauptschalter zwar im zuvor gespeicherten Zustand EIN, die Anlage aber fail-safe **nicht auslösebereit**, bis der fehlende Melder aktualisiert wurde. Es gibt danach kein periodisches Polling.
+
+Damit wird ein beim Hochfahren nachgelieferter `TRUE`-Wert eines bereits aktiven Bewegungsmelders nicht als neue `FALSE -> TRUE`-Flanke interpretiert. Ein vor dem Ausfall laufender Alarm bzw. eine laufende Wieder-scharf-Phase wird nach dem Sensorabgleich aus den persistenten Sessiondaten fortgeführt. Die Zeitautomatik wird beim Neustart nicht rückwirkend neu bewertet; sie läuft ab der nächsten regulären Zeitgrenze weiter.
+
+### Sichere E-Mail-Quittierung
+
+Optional kann die Alarm-E-Mail einen Button **Alarm quittieren** enthalten. Diese Funktion ist nach dem Update standardmäßig AUS und muss ausdrücklich aktiviert werden. Zusätzlich ist eine von außen erreichbare **HTTPS-Basis-URL** einzutragen.
+
+- pro aktiver Alarm-Session wird ein kryptographischer 256-Bit-Einmal-Token erzeugt
+- persistent gespeichert wird nur dessen SHA-256-Hash, nicht der Klartext-Token
+- der Token ist an genau die aktuelle Alarm-Session gebunden und maximal 24 Stunden gültig
+- der Link in der E-Mail führt zunächst nur auf eine Bestätigungsseite; ein normaler GET-Aufruf verändert keinen Alarmzustand
+- erst der dortige POST-Button **Alarm jetzt quittieren** ruft denselben zentralen Quittierungsweg wie Visu/GT8 auf
+- nach Quittierung, automatischem Alarmende oder vollständigem Ausschalten wird der Token ungültig
+
+Dadurch können automatische Link-Prüfungen eines Mailproviders den Alarm nicht allein durch das Abrufen des Links quittieren.
+
+### Variablenverbrauch 0.1.15
+
+0.1.15 legt gegenüber 0.1.14 **keine zusätzliche feste Symcon-Statusvariable** an. Technische Startzustände, E-Mail-Token, TV-/Videozustände und Warteschlangen liegen ausschließlich in Modul-Attributen, Buffern oder Timern. Der interne DLNA-Medienserver erzeugt ebenfalls keine sichtbaren Symcon-Variablen. Dynamisch bleibt lediglich die bereits vorhandene `WatchSensor<ID>`-Booleanvariable pro konfiguriertem GUS bestehen, weil sie dessen Ein-/Ausschaltung direkt in der Visualisierung ermöglicht.
+
+### Samsung-Testmodule nach erfolgreicher Abnahme
+
+Die produktive Alarmanlage enthält den vollständigen getesteten Samsung-Video-Pfad und ihren eigenen internen Medienserver. Die Bibliothek benötigt weder `Samsung Alarmvideo Test` noch dessen alten `Samsung Alarmvideo MediaServer Helper`. Nach einem erfolgreichen vollständigen Test von 0.1.15 können beide Testmodule samt deren altem Server Socket gelöscht werden. **Nicht löschen**: `LCN Alarmanlage MediaServer (intern)` und `LCN Alarmanlage Video HTTP`; diese beiden versteckten technischen Instanzen gehören zur Alarmanlage selbst.
 
 ### Unveränderte Visualisierung aus 0.1.11
 
@@ -42,7 +79,7 @@ Zur Quittierung werden automatisch **alle** installierten `LCNLight`-Instanzen r
 
 ### Push und E-Mail
 
-Push und E-Mail entsprechen dem getesteten Stand 0.1.4. Pro Alarm-Session wird nur beim ersten GUS-Trigger eine Benachrichtigung eingeplant. Weitere Bewegungen ergänzen ausschließlich das Bewegungsprofil. Persönliche Empfängeradressen bleiben ausschließlich in der lokalen Symcon-Instanzkonfiguration.
+Pro Alarm-Session wird nur beim ersten GUS-Trigger eine Benachrichtigung eingeplant. Weitere Bewegungen ergänzen ausschließlich das Bewegungsprofil. Persönliche Empfängeradressen bleiben ausschließlich in der lokalen Symcon-Instanzkonfiguration. Die optionale E-Mail-Quittierung aus 0.1.15 ergänzt diesen Versand nur um einen sicheren sessiongebundenen Bestätigungslink; sie verändert den Alarmkern nicht.
 
 ### Samsung-TV / Alarmvideo
 
@@ -83,9 +120,11 @@ Der DLNA-Server wird nach einmaliger Einrichtung wiederverwendet. Wenn während 
 - Bibliotheks-GUID bleibt `{931F4DEE-ED55-42F9-9DDB-A8C23293A89D}`
 - Modul-GUID bleibt `{F5B0CD30-B98C-4580-BD71-432F3018628F}`
 - Prefix bleibt `LCNALARM`
-- alle bestehenden Properties und Variablen-Idents aus 0.1.11 bleiben erhalten
-- neue Video-Properties werden ergänzt; bestehende TV-Auswahl bleibt erhalten
-- `ApplyChanges()` richtet bei aktivierter TV-Funktion nur den lokalen Medienserver ein, sendet aber keinen TV-/Alarmbefehl
+- alle bestehenden Properties und Variablen-Idents aus 0.1.14 bleiben erhalten
+- neu sind nur die optionalen Properties `EmailAcknowledgeEnabled` und `EmailAcknowledgeBaseURL`; beide greifen nicht in alte Konfigurationen ein
+- es werden keine zusätzlichen festen Statusvariablen erzeugt
+- `ApplyChanges()` richtet bei aktivierter TV-Funktion nur den lokalen Medienserver ein, sendet aber keinen neuen Alarmbefehl; Sensorstatus wird ausschließlich zur sicheren Start-Baseline angefordert
+- Rollback: der komplette Repository-Inhalt kann wieder durch 0.1.14 ersetzt werden; GUIDs, Prefix, bestehende Properties und Variablen bleiben kompatibel
 
 ## Alarm-Nachlauf 0.1.9
 

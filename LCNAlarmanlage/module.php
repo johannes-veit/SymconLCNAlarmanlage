@@ -18,6 +18,16 @@ class LCNAlarmanlage extends IPSModuleStrict
     private const LCN_LIGHT_MODULE_GUID = '{331B7F25-09CF-4611-9300-EADA0BB9AFF3}';
     private const SERVER_SOCKET_MODULE_GUID = '{8062CF2B-600E-41D6-AD4B-1BA66C32D6ED}';
     private const MEDIA_HELPER_MODULE_GUID = '{0D50907C-F261-4354-A8E3-0D8D12F48D4C}';
+    // Native LCN-Struktur wie in LCN Light Control 0.6.1 validiert.
+    private const LCN_UNIT_MODULE_GUID = '{2D871359-14D8-493F-9B01-26432E3A710F}';
+    private const LCN_MODULE_MODULE_GUID = '{0E31FED6-E465-4621-95D4-AAF2683C41EC}';
+
+    // Nach Kernel-/Modulstart werden die Melder einmalig aktiv synchronisiert.
+    // Bis zum Abschluss dieser Schutzphase kann keine neue Alarm-Session entstehen.
+    private const STARTUP_SYNC_WAIT_MS = 8000;
+    private const STARTUP_SYNC_RETRY_MS = 5000;
+    private const STARTUP_SYNC_MAX_ATTEMPTS = 2;
+    private const ACK_TOKEN_LIFETIME_SECONDS = 86400;
 
     // Exakt aus dem real getesteten Samsung Alarmvideo Test 0.2.6 übernommen.
     private const AVT_SERVICE = 'urn:schemas-upnp-org:service:AVTransport:1';
@@ -46,6 +56,11 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterPropertyBoolean('EmailEnabled', false);
         $this->RegisterPropertyInteger('SMTPInstanceID', 0);
         $this->RegisterPropertyString('EmailRecipients', '');
+        // Optionaler sicherer Quittierungslink in der Alarmmail. Aus Rollback- und
+        // Sicherheitsgründen nach dem Update zunächst AUS. Die Basis-URL ist z. B.
+        // die HTTPS-Adresse von Symcon Connect ohne abschließenden /hook-Pfad.
+        $this->RegisterPropertyBoolean('EmailAcknowledgeEnabled', false);
+        $this->RegisterPropertyString('EmailAcknowledgeBaseURL', '');
         // Samsung-TV ist optional und nach einem Update bewusst AUS. Die Steuerung
         // erfolgt direkt ueber die bereits funktionierenden SamsungTizen-Funktionen,
         // niemals ueber den Alarmkern oder die PowerFix-Impulsvariable.
@@ -71,8 +86,18 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterAttributeInteger('AlarmQuietNotBefore', 0);
         $this->RegisterAttributeString('RegisteredSensorIDs', '[]');
         $this->RegisterAttributeString('RegisteredWatchSensorIDs', '[]');
+        // 0.1.16: nur technische Registrierungen fuer die zusaetzliche reine
+        // Bewegungsmelder-Statusanzeige. Es werden dafuer KEINE Symcon-Variablen erzeugt.
+        $this->RegisterAttributeString('RegisteredMotionStatusIDs', '[]');
         $this->RegisterAttributeString('RegisteredAcknowledgeIDs', '[]');
         $this->RegisterAttributeInteger('RegisteredPanicVariableID', 0);
+
+        // E-Mail-Quittierung: nur Hash und Sessionbindung werden persistent gespeichert.
+        // Der Klartext-Token steht ausschließlich im einmalig versendeten Link.
+        $this->RegisterAttributeString('EmailAckTokenHash', '');
+        $this->RegisterAttributeString('EmailAckSessionID', '');
+        $this->RegisterAttributeInteger('EmailAckExpiresAt', 0);
+
         // TV-Laufzeitstatus ist strikt vom Alarmzustand getrennt. Er dient nur dazu,
         // einen vom Alarm gestarteten TV spaeter wieder sicher auszuschalten.
         $this->RegisterAttributeBoolean('TVOwnedByAlarm', false);
@@ -238,6 +263,11 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterTimer('TVVideoRetry', 0, 'LCNALARM_TVVideoRetry($_IPS[\'TARGET\']);');
         $this->RegisterTimer('TVVideoLoopGuard', 0, 'LCNALARM_TVVideoLoopGuard($_IPS[\'TARGET\']);');
         $this->RegisterTimer('TVVideoStatsSync', 0, 'LCNALARM_TVVideoStatsSync($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('StartupGuard', 0, 'LCNALARM_StartupGuard($_IPS[\'TARGET\']);');
+
+        // Sicherer E-Mail-Quittierungsweg. Der GET-Aufruf zeigt ausschließlich eine
+        // Bestätigungsseite; erst ein POST darf die aktuelle Alarm-Session quittieren.
+        $this->RegisterHook('/hook/lcnalarm/' . $this->InstanceID);
 
         // Kompakte, interaktive Kachel via offiziellem HTML-SDK. Die nativen
         // Statusvariablen bleiben als Fallback/Listenansicht vollständig erhalten.
@@ -259,6 +289,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('NotificationQueue', 0);
         $this->SetTimerInterval('TVWakeRetry', 0);
         $this->SetTimerInterval('TVOffCheck', 0);
+        $this->SetTimerInterval('StartupGuard', 0);
         $this->StopAllTVVideoTimers();
 
         if (IPS_GetKernelRunlevel() !== KR_READY) {
@@ -340,6 +371,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         if ($Message === OM_UNREGISTER) {
             if ($this->IsSensorVariable($SenderID)) {
                 $this->HandleSensorUnavailable($SenderID);
+            } elseif ($this->IsMotionStatusVariable($SenderID)) {
+                // Reine Anzeigequelle: niemals Alarm, Scharfzustand oder Session veraendern.
+                $this->PushVisualizationState();
             } elseif ($this->IsAcknowledgeVariable($SenderID) || $SenderID === $this->PanicGroupVariableID()) {
                 $this->HandleAuxiliaryUnavailable($SenderID);
             }
@@ -354,6 +388,10 @@ class LCNAlarmanlage extends IPSModuleStrict
         // direkt über die SenderID aus der Variable gelesen.
         if ($this->IsSensorVariable($SenderID)) {
             $this->ProcessSensorUpdate($SenderID);
+        } elseif ($this->IsMotionStatusVariable($SenderID)) {
+            // Nicht ueberwachte/automatisch gefundene GUS aktualisieren ausschliesslich
+            // ihren Punkt in der Visualisierung. Keine Alarm- oder Startschutzlogik.
+            $this->PushVisualizationState();
         }
         if ($this->IsAcknowledgeVariable($SenderID)) {
             $this->ProcessAcknowledgeLightUpdate($SenderID);
@@ -435,6 +473,78 @@ class LCNAlarmanlage extends IPSModuleStrict
     }
 
     /**
+     * WebHook für die optionale E-Mail-Quittierung.
+     * GET ist absichtlich rein lesend und zeigt nur die Bestätigungsseite.
+     * Erst POST darf die aktuelle, tokengebundene Alarm-Session quittieren.
+     */
+    public function ProcessHookData(): void
+    {
+        header('Content-Type: text/html; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        header('X-Content-Type-Options: nosniff');
+        header('Referrer-Policy: no-referrer');
+        header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+
+        if (!$this->ReadPropertyBoolean('EmailAcknowledgeEnabled')) {
+            http_response_code(404);
+            echo $this->RenderEmailAckPage('Nicht verfügbar', 'Die E-Mail-Quittierung ist für diese Alarmanlage nicht aktiviert.', '', '', false);
+            return;
+        }
+
+        $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+        $sessionID = trim((string) (($method === 'POST' ? ($_POST['session'] ?? '') : ($_GET['session'] ?? ''))));
+        $token = trim((string) (($method === 'POST' ? ($_POST['token'] ?? '') : ($_GET['token'] ?? ''))));
+
+        $validation = $this->ValidateEmailAckToken($sessionID, $token);
+        if (!(bool) ($validation['ok'] ?? false)) {
+            http_response_code((int) ($validation['status'] ?? 410));
+            echo $this->RenderEmailAckPage(
+                'Link nicht mehr gültig',
+                (string) ($validation['message'] ?? 'Dieser Quittierungslink ist ungültig oder bereits verbraucht.'),
+                '',
+                '',
+                false
+            );
+            return;
+        }
+
+        if ($method !== 'POST') {
+            $session = $this->ReadSession('CurrentSession');
+            $sensor = (string) ($session['firstSensorName'] ?? '-');
+            $startedAt = (float) ($session['startedAt'] ?? 0);
+            $message = 'Aktiver Alarm'
+                . ($sensor !== '' ? ' · ' . $sensor : '')
+                . ($startedAt > 0 ? ' · ' . $this->FormatTimestamp($startedAt) : '')
+                . '. Erst die folgende Bestätigung beendet die aktuelle Alarm-Session.';
+            echo $this->RenderEmailAckPage('Alarm quittieren?', $message, $sessionID, $token, true);
+            return;
+        }
+
+        try {
+            $this->AcknowledgeAlarmInternal('email-link');
+            $this->InvalidateEmailAckToken($sessionID);
+            echo $this->RenderEmailAckPage(
+                'Alarm quittiert',
+                'Die aktuelle Alarm-Session wurde beendet. Die Alarmanlage bleibt eingeschaltet und wird nach freien Meldern und der eingestellten Verzögerung wieder scharf.',
+                '',
+                '',
+                false
+            );
+        } catch (Throwable $e) {
+            http_response_code(503);
+            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'E-Mail-Quittierung fehlgeschlagen: ' . $e->getMessage());
+            echo $this->RenderEmailAckPage(
+                'Quittierung nicht ausgeführt',
+                'Die Quittierung konnte momentan nicht sicher ausgeführt werden. Bitte erneut über die Symcon-App oder einen Lichtschalter quittieren.',
+                '',
+                '',
+                false
+            );
+        }
+    }
+
+    /**
      * Nachlauf-Timer der aktiven Alarm-Session. Er darf erst ablaufen, nachdem alle
      * aktuell überwachten GUS frei sind. Jede neue Bewegung hebt die Deadline auf.
      */
@@ -508,6 +618,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetAlarmControlsVisible(false);
         $this->SetTimerInterval('RearmDisplay', 0);
 
+        $this->InvalidateEmailAckToken($endedSessionID);
         $this->SetPanicForSession($endedSessionID, false, 'automatic-afterrun');
         $this->EndTVForAlarm($endedSessionID, 'automatic-afterrun');
 
@@ -970,11 +1081,170 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->ScheduleNextBoundary();
     }
 
+    /**
+     * Boot-/ApplyChanges-Schutzphase. Sensorwerte werden frisch eingelesen und
+     * erst danach für neue Alarme freigegeben. Eine vorhandene aktive Session
+     * wird fortgeführt, eine neue Session kann hier niemals erzeugt werden.
+     */
+    public function StartupGuard(): void
+    {
+        $this->SetTimerInterval('StartupGuard', 0);
+
+        if ($this->GetBuffer('ConfigurationOK') !== '1') {
+            return;
+        }
+
+        $initializing = $this->GetBuffer('RuntimeReady') !== '1';
+        $expected = $this->ReadStartupIDBuffer('StartupExpectedSensorIDs');
+        $seen = $this->ReadStartupIDBuffer('StartupSeenSensorIDs');
+        $missing = array_values(array_diff($expected, $seen));
+        $attempt = max(0, (int) $this->GetBuffer('StartupSyncAttempt'));
+
+        if ($initializing && $missing !== [] && $attempt < self::STARTUP_SYNC_MAX_ATTEMPTS) {
+            // Genau ein begrenzter zweiter Statusabgleich; kein zyklisches Polling.
+            $this->RequestStartupSensorStatus($this->ReadSensorMap());
+            $this->SetBuffer('StartupSyncAttempt', (string) ($attempt + 1));
+            $this->SetTimerInterval('StartupGuard', self::STARTUP_SYNC_RETRY_MS);
+            $this->SetValue('Status', 'INITIALISIERUNG – Sensorstatus wird abgeglichen');
+            $this->PushVisualizationState();
+            return;
+        }
+
+        $syncComplete = ($missing === []);
+        $this->SetBuffer('StartupSyncIncomplete', $syncComplete ? '0' : '1');
+
+        if (!$syncComplete) {
+            IPS_LogMessage(
+                'LCN Alarmanlage #' . $this->InstanceID,
+                'Startschutz: keine frische Statusmeldung von GUS #' . implode(', #', $missing) .
+                '. Anlage bleibt fail-safe nicht auslösebereit, bis diese Sensoren aktualisiert wurden.'
+            );
+            $this->SendDebug('StartupSync', 'Fehlende Sensorupdates: ' . implode(', ', $missing), 0);
+        }
+
+        if (!$this->AcquireEngineLock()) {
+            $this->ReportLockFailure('StartupGuard');
+            $this->SetTimerInterval('StartupGuard', 1000);
+            return;
+        }
+
+        $sessionID = '';
+        $sessionState = self::SESSION_NONE;
+        $resumeActiveAlarm = false;
+        $restoreRearmLights = false;
+        $runAlarmTimeoutNow = false;
+        $scheduleAlarmMs = 0;
+        $scheduleRearm = false;
+
+        try {
+            // Direkt vor Freigabe nochmals alle aktuellen Werte einlesen. Damit ist
+            // die Baseline nicht von einem frühen Wert während KR_READY abhängig.
+            $states = [];
+            foreach ($this->ReadSensorMap() as $variableID => $sensor) {
+                $id = (int) ($sensor['id'] ?? $variableID);
+                if ($id > 0 && IPS_VariableExists($id)) {
+                    $states[(string) $id] = (bool) GetValue($id);
+                }
+            }
+            $this->SetBuffer('SensorStates', $this->Encode($states));
+
+            $session = $this->ReadSession('CurrentSession');
+            $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
+            $sessionID = (string) ($session['id'] ?? '');
+
+            if ($sessionState === self::SESSION_ACTIVE) {
+                $this->SetValue('AlarmActive', true);
+                $this->WriteAttributeBoolean('ArmedReady', false);
+                $this->SetAlarmControlsVisible(true);
+                $resumeActiveAlarm = $initializing && $sessionID !== '';
+
+                if ($syncComplete && $this->AreAllMonitoredSensorsClear($states)) {
+                    $deadline = $this->ReadAttributeInteger('AlarmQuietNotBefore');
+                    if ($deadline <= 0) {
+                        $deadline = time() + max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
+                        $this->WriteAttributeInteger('AlarmQuietNotBefore', $deadline);
+                    }
+                    if ($deadline <= time()) {
+                        $runAlarmTimeoutNow = true;
+                    } else {
+                        $scheduleAlarmMs = max(1, ($deadline - time()) * 1000);
+                    }
+                } else {
+                    // Unvollständiger/aktiver Sensorstatus darf eine bestehende
+                    // Alarm-Session niemals automatisch beenden.
+                    $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
+                }
+            } elseif ($sessionState === self::SESSION_REARM_WAIT) {
+                $this->SetValue('AlarmActive', false);
+                $this->WriteAttributeBoolean('ArmedReady', false);
+                $this->SetAlarmControlsVisible(false);
+                $restoreRearmLights = $initializing && $sessionID !== '';
+
+                if ($syncComplete && $this->AreAllMonitoredSensorsClear($states)) {
+                    if ($this->ReadAttributeInteger('RearmNotBefore') <= 0) {
+                        $this->WriteAttributeInteger(
+                            'RearmNotBefore',
+                            time() + max(0, $this->ReadPropertyInteger('RearmDelaySeconds'))
+                        );
+                    }
+                    $scheduleRearm = true;
+                } else {
+                    $this->WriteAttributeInteger('RearmNotBefore', 0);
+                }
+            } else {
+                $this->SetValue('AlarmActive', false);
+                $this->SetAlarmControlsVisible(false);
+
+                $armed = (bool) $this->GetValue('Arm');
+                $ready = $armed
+                    && $syncComplete
+                    && $this->CountMonitoredSensors() > 0
+                    && $this->AreAllMonitoredSensorsClear($states);
+                $this->WriteAttributeBoolean('ArmedReady', $ready);
+            }
+
+            // Erst NACH Baseline-Aufbau und Zustandsrekonstruktion dürfen neue
+            // Sensorflanken wieder als echte Ereignisse ausgewertet werden.
+            $this->SetBuffer('RuntimeReady', '1');
+        } finally {
+            IPS_SemaphoreLeave($this->EngineSemaphoreName());
+        }
+
+        if ($scheduleAlarmMs > 0) {
+            $this->SetTimerInterval('AlarmTimeout', $scheduleAlarmMs);
+        }
+        if ($runAlarmTimeoutNow) {
+            $this->AlarmTimeout();
+        } elseif ($scheduleRearm) {
+            $this->ScheduleRearmFromAttribute();
+        }
+
+        // Externe Aktionen erst nach der internen Freigabe. Eine alte aktive
+        // Alarm-Session wird damit zuverlässig fortgeführt, ohne einen neuen Alarm
+        // aus Sensorwerten des Bootvorgangs zu erzeugen.
+        $fresh = $this->ReadSession('CurrentSession');
+        $freshState = (string) ($fresh['state'] ?? self::SESSION_NONE);
+        $freshSessionID = (string) ($fresh['id'] ?? '');
+        if ($resumeActiveAlarm && $freshState === self::SESSION_ACTIVE && $freshSessionID === $sessionID) {
+            $this->SetPanicForSession($sessionID, true, 'restart');
+            $this->StartTVForAlarm($sessionID);
+        } elseif ($restoreRearmLights && $freshState === self::SESSION_REARM_WAIT && $freshSessionID === $sessionID) {
+            $this->SetPanicForSession($sessionID, false, 'restart-rearm-wait');
+        }
+
+        $this->ScheduleNextBoundary();
+        $this->RefreshDisplay();
+    }
+
     private function InitializeRuntime(): void
     {
         // Während der Rekonstruktion dürfen eintreffende Sensorupdates nur die Baseline
         // aktualisieren, aber niemals einen historischen Alarm erzeugen.
         $this->SetBuffer('RuntimeReady', '0');
+        $this->SetBuffer('StartupExpectedSensorIDs', '[]');
+        $this->SetBuffer('StartupSeenSensorIDs', '[]');
+        $this->SetBuffer('StartupSyncAttempt', '0');
+        $this->SetBuffer('StartupSyncIncomplete', '0');
         $this->SetBuffer('PanicQueue', '[]');
         $this->SetBuffer('PanicLightMap', '{}');
         $this->SetBuffer('NotificationQueue', '[]');
@@ -988,13 +1258,18 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('NotificationQueue', 0);
         $this->SetTimerInterval('TVWakeRetry', 0);
         $this->SetTimerInterval('TVOffCheck', 0);
+        $this->SetTimerInterval('StartupGuard', 0);
         $this->StopAllTVVideoTimers();
 
         $this->UnregisterOldSensorMessages();
+        $this->UnregisterOldMotionStatusMessages();
         $this->UnregisterOldAcknowledgeMessages();
         $this->UnregisterOldPanicReference();
 
         [$sensorMap, $errors] = $this->BuildSensorMap();
+        // Reine Visualisierungsquelle: alle konfigurierten GUS plus automatisch
+        // gefundene native LCN-Units mit Bewegungsmelder-/GUS-Bezeichnung.
+        $motionStatusMap = $this->BuildMotionStatusMap($sensorMap);
         // Die bisherige Property AcknowledgeLights bleibt aus Update-/Rollback-Gründen
         // unverändert erhalten, beschreibt ab 0.1.14 aber ausschließlich die Lichter,
         // die bei Alarm als Panikbeleuchtung eingeschaltet werden. Quittieren darf jede
@@ -1020,6 +1295,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $errors = array_merge($errors, $panicLightErrors, $panicErrors);
 
         $this->SetBuffer('SensorMap', $this->Encode($sensorMap));
+        $this->SetBuffer('MotionStatusMap', $this->Encode($motionStatusMap));
         $this->SetBuffer('PanicLightMap', $this->Encode($panicLightMap));
         $this->SetBuffer('AcknowledgeMap', $this->Encode($acknowledgeMap));
         $this->SetBuffer('PanicGroupVariableID', (string) $panicVariableID);
@@ -1100,6 +1376,22 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetBuffer('SensorStates', $this->Encode($states));
         $this->WriteAttributeString('RegisteredSensorIDs', $this->Encode(array_map('intval', array_keys($sensorMap))));
 
+        // Fuer bereits als Alarmquelle registrierte GUS ist keine zweite Message-
+        // Registrierung notwendig. Nur zusaetzlich automatisch gefundene Melder
+        // bekommen eine reine Anzeige-Subscription. Das erzeugt keinen LCN-Traffic.
+        $registeredMotionStatusIDs = [];
+        foreach ($motionStatusMap as $variableID => $sensor) {
+            $variableID = (int) $variableID;
+            if ($variableID <= 0 || isset($sensorMap[(string) $variableID]) || !IPS_VariableExists($variableID)) {
+                continue;
+            }
+            $this->RegisterMessage($variableID, VM_UPDATE);
+            $this->RegisterMessage($variableID, OM_UNREGISTER);
+            $this->RegisterReference($variableID);
+            $registeredMotionStatusIDs[] = $variableID;
+        }
+        $this->WriteAttributeString('RegisteredMotionStatusIDs', $this->Encode($registeredMotionStatusIDs));
+
         $acknowledgeStates = [];
         foreach ($acknowledgeMap as $variableID => $light) {
             $acknowledgeStates[(string) $variableID] = (bool) GetValue((int) $variableID);
@@ -1122,6 +1414,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
 
         if ($sessionState !== self::SESSION_ACTIVE) {
+            $this->InvalidateEmailAckToken('');
             $staleVideoSessionID = $this->ReadAttributeString('VideoSessionID');
             if ($staleVideoSessionID !== '' || $this->ReadAttributeInteger('VideoActive') === 1) {
                 $this->StopAlarmVideoForSession($staleVideoSessionID, 'startup-no-active-session', true);
@@ -1129,87 +1422,47 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->ClearTVOwnership();
         }
 
+        if ($sessionState === self::SESSION_ACTIVE && !(bool) $this->GetValue('Arm')) {
+            // Nur eine tatsächlich persistierte Inkonsistenz wird bereinigt. Ein
+            // Kernelstart selbst verändert den vorherigen EIN/AUS-Zustand nicht.
+            $this->SetArmedInternal(false, 'restart-reconcile');
+            $session = $this->ReadSession('CurrentSession');
+            $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
+        }
+
         if ($sessionState === self::SESSION_ACTIVE) {
-            if (!(bool) $this->GetValue('Arm')) {
-                // Inkonsistenz nach Abbruch während einer Abschaltung: über denselben
-                // kollisionsgeschützten Pfad wie jede andere Abschaltung rekonstruieren.
-                $this->SetArmedInternal(false, 'restart-reconcile');
-            } else {
-                $this->SetValue('AlarmActive', true);
-                $this->WriteAttributeBoolean('ArmedReady', false);
-                $this->SetAlarmControlsVisible(true);
-                // Alarmdauer ist eine Nachlaufzeit ab dem Zeitpunkt, an dem alle
-                // überwachten GUS frei sind. Bei noch aktiver Bewegung gibt es keinen
-                // Alarm-Endtimer. Eine bereits persistierte Deadline wird fortgeführt.
-                if ($this->AreAllMonitoredSensorsClear($states)) {
-                    $deadline = $this->ReadAttributeInteger('AlarmQuietNotBefore');
-                    if ($deadline <= 0) {
-                        $deadline = time() + max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
-                        $this->WriteAttributeInteger('AlarmQuietNotBefore', $deadline);
-                    }
-                    $remainingMs = max(1, ($deadline - time()) * 1000);
-                    if ($deadline <= time()) {
-                        $this->AlarmTimeout();
-                    } else {
-                        $this->SetTimerInterval('AlarmTimeout', $remainingMs);
-                    }
-                } else {
-                    $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
-                    $this->SetTimerInterval('AlarmTimeout', 0);
-                }
-            }
+            $this->SetValue('AlarmActive', true);
+            $this->WriteAttributeBoolean('ArmedReady', false);
+            $this->SetAlarmControlsVisible(true);
         } elseif ($sessionState === self::SESSION_REARM_WAIT) {
             $this->SetValue('AlarmActive', false);
             $this->WriteAttributeBoolean('ArmedReady', false);
             $this->SetAlarmControlsVisible(false);
-            if ($this->AreAllMonitoredSensorsClear($states)) {
-                if ($this->ReadAttributeInteger('RearmNotBefore') <= 0) {
-                    $this->WriteAttributeInteger(
-                        'RearmNotBefore',
-                        time() + max(0, $this->ReadPropertyInteger('RearmDelaySeconds'))
-                    );
-                }
-                $this->ScheduleRearmFromAttribute();
-            }
         } else {
             $this->SetValue('AlarmActive', false);
             $this->SetAlarmControlsVisible(false);
 
-            if ((bool) $this->GetValue('Automatic') && $this->ReadAttributeInteger('ManualOverride') === self::OVERRIDE_NONE) {
-                $this->ApplyCurrentSchedule('startup');
-            } else {
-                $this->ApplyDesiredArmState((bool) $this->GetValue('Arm'));
-            }
+            // Statusvariablen sind in Symcon persistent. Beim Kernelstart wird daher
+            // bewusst der tatsächlich vor dem Ausfall gespeicherte Arm-Zustand
+            // übernommen. Die Zeitautomatik wird NICHT rückwirkend ausgewertet,
+            // sondern setzt ab der nächsten regulären Zeitgrenze fort.
+            $this->ApplyDesiredArmState((bool) $this->GetValue('Arm'));
         }
 
-        // Ein während der Rekonstruktion eventuell abgelaufener Nachlauf kann die
-        // Session bereits beendet haben. Deshalb den Zustand vor externen Aktionen
-        // nochmals frisch lesen und niemals mit einem veralteten ACTIVE-Snapshot arbeiten.
-        $session = $this->ReadSession('CurrentSession');
-        $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
+        // Einmalige aktive Statussynchronisation der nativen LCN-Module. LCN_RequestStatus
+        // fragt laut Symcon-Dokumentation u. a. alle binären Sensoren eines LCN-Moduls ab.
+        // Bis die erwarteten Antworten angekommen sind, bleibt ArmedReady immer FALSE.
+        $this->SetBuffer('StartupSeenSensorIDs', '[]');
+        $this->SetBuffer('StartupSyncAttempt', '0');
+        $this->SetBuffer('StartupSyncIncomplete', '0');
+        $sync = $this->RequestStartupSensorStatus($sensorMap);
+        $this->SetBuffer('StartupExpectedSensorIDs', $this->Encode($sync['expectedSensorIDs'] ?? []));
+        $this->SetBuffer('StartupSyncAttempt', '1');
 
-        // Bei einem Neustart während einer noch aktiven Alarm-Session werden die
-        // konfigurierten Paniklichter deterministisch erneut auf EIN angefordert.
-        // Bereits eingeschaltete Leuchten erhalten dabei keinen weiteren Befehl.
-        if ($sessionState === self::SESSION_ACTIVE) {
-            $sessionID = (string) ($session['id'] ?? '');
-            if ($sessionID !== '') {
-                $this->SetPanicForSession($sessionID, true, 'restart');
-                $this->StartTVForAlarm($sessionID);
-            }
-        } elseif ($sessionState === self::SESSION_REARM_WAIT) {
-            // Falls Symcon während einer Quittierung/Restaurierung neu gestartet wurde,
-            // wird der vor Alarm gespeicherte Lichtzustand erneut deterministisch
-            // angefordert. Dadurch bleibt kein Paniklicht nach einem Neustart hängen.
-            $sessionID = (string) ($session['id'] ?? '');
-            if ($sessionID !== '') {
-                $this->SetPanicForSession($sessionID, false, 'restart-rearm-wait');
-            }
-        }
-
-        // Baseline und persistenter Zustand sind jetzt konsistent. Ab hier dürfen
-        // neue FALSE->TRUE-Flanken als echte Bewegungsereignisse ausgewertet werden.
-        $this->SetBuffer('RuntimeReady', '1');
+        // Während dieses Zeitfensters werden VM_UPDATE-Meldungen ausschließlich als
+        // Baseline übernommen. Dadurch kann eine beim Booten nachgelieferte TRUE-Meldung
+        // eines bereits aktiven GUS niemals als neue FALSE->TRUE-Alarmflanke gelten.
+        $this->SetTimerInterval('StartupGuard', self::STARTUP_SYNC_WAIT_MS);
 
         $this->ScheduleNextBoundary();
         $this->RefreshDisplay();
@@ -1244,6 +1497,10 @@ class LCNAlarmanlage extends IPSModuleStrict
         $changed = false;
 
         try {
+            // Während der Startschutzphase zählt auch ein VM_UPDATE ohne Wertänderung
+            // als frische Statusbestätigung des nativen LCN-Sensors.
+            $this->MarkStartupSensorSeen($VariableID);
+
             $states = $this->ReadSensorStates();
             $key = (string) $VariableID;
 
@@ -1285,8 +1542,9 @@ class LCNAlarmanlage extends IPSModuleStrict
                         // Jede neue Bewegung hebt den laufenden Nachlauf sofort auf.
                         $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
                         $cancelAlarmAfterrun = true;
-                    } elseif ($this->AreAllMonitoredSensorsClear($states)) {
-                        // Erst wenn wirklich alle aktuell überwachten Räume frei sind,
+                    } elseif ($this->IsStartupSensorSyncComplete() && $this->AreAllMonitoredSensorsClear($states)) {
+                        // Erst wenn wirklich alle aktuell überwachten Räume frei und
+                        // die Start-Synchronisation vollständig bestätigt ist,
                         // beginnt die volle Nachlaufzeit von vorn.
                         $duration = max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
                         $deadline = time() + $duration;
@@ -1300,7 +1558,7 @@ class LCNAlarmanlage extends IPSModuleStrict
                     if ($newValue) {
                         $this->WriteAttributeInteger('RearmNotBefore', 0);
                         $cancelRearm = true;
-                    } elseif ($this->AreAllMonitoredSensorsClear($states)) {
+                    } elseif ($this->IsStartupSensorSyncComplete() && $this->AreAllMonitoredSensorsClear($states)) {
                         $this->WriteAttributeInteger(
                             'RearmNotBefore',
                             time() + max(0, $this->ReadPropertyInteger('RearmDelaySeconds'))
@@ -1310,7 +1568,11 @@ class LCNAlarmanlage extends IPSModuleStrict
                 }
             } elseif ((bool) $this->GetValue('Arm')) {
                 if (!(bool) $this->ReadAttributeBoolean('ArmedReady')) {
-                    if ($this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states)) {
+                    if (
+                        $this->IsStartupSensorSyncComplete()
+                        && $this->CountMonitoredSensors() > 0
+                        && $this->AreAllMonitoredSensorsClear($states)
+                    ) {
                         $this->WriteAttributeBoolean('ArmedReady', true);
                     }
                 } elseif ($watched && $newValue) {
@@ -1687,6 +1949,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetAlarmControlsVisible(false);
 
         if ($endedSessionID !== '') {
+            $this->InvalidateEmailAckToken($endedSessionID);
             $this->SetPanicForSession($endedSessionID, false, 'acknowledged/' . $Source);
             $this->EndTVForAlarm($endedSessionID, 'acknowledged/' . $Source);
         }
@@ -1748,7 +2011,11 @@ class LCNAlarmanlage extends IPSModuleStrict
                 $session = $this->ReadSession('CurrentSession');
                 if ($session === []) {
                     $states = $this->ReadSensorStates();
-                    $this->WriteAttributeBoolean('ArmedReady', $this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states));
+                    $ready = $this->GetBuffer('RuntimeReady') === '1'
+                        && $this->IsStartupSensorSyncComplete()
+                        && $this->CountMonitoredSensors() > 0
+                        && $this->AreAllMonitoredSensorsClear($states);
+                    $this->WriteAttributeBoolean('ArmedReady', $ready);
                 }
                 // Eine vorhandene aktive/rearm_wait-Session wird niemals durch ein
                 // erneutes EIN überschrieben.
@@ -1773,7 +2040,12 @@ class LCNAlarmanlage extends IPSModuleStrict
             $this->SetAlarmControlsVisible(false);
         }
         if ($panicOffSessionID !== '') {
+            $this->InvalidateEmailAckToken($panicOffSessionID);
             $this->SetPanicForSession($panicOffSessionID, false, 'anlage-aus/' . $Reason);
+        } else {
+            // Auch eine bereits in rearm_wait befindliche Session bzw. ein alter Link
+            // darf nach vollständigem Unscharfschalten nicht weiter quittierbar sein.
+            $this->InvalidateEmailAckToken('');
         }
         if ($tvOffSessionID !== '') {
             $this->EndTVForAlarm($tvOffSessionID, 'anlage-aus/' . $Reason);
@@ -1792,7 +2064,11 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $this->SetValue('Arm', true);
         $states = $this->ReadSensorStates();
-        $this->WriteAttributeBoolean('ArmedReady', $this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states));
+        $ready = $this->GetBuffer('RuntimeReady') === '1'
+            && $this->IsStartupSensorSyncComplete()
+            && $this->CountMonitoredSensors() > 0
+            && $this->AreAllMonitoredSensorsClear($states);
+        $this->WriteAttributeBoolean('ArmedReady', $ready);
     }
 
     private function ApplyCurrentSchedule(string $Reason): void
@@ -1948,6 +2224,10 @@ class LCNAlarmanlage extends IPSModuleStrict
             }
         } elseif (!(bool) $this->GetValue('Arm')) {
             $this->SetValue('Status', 'ALARMANLAGE AUS');
+        } elseif ($this->GetBuffer('RuntimeReady') !== '1') {
+            $this->SetValue('Status', 'INITIALISIERUNG – Sensorstatus wird abgeglichen');
+        } elseif (!$this->IsStartupSensorSyncComplete()) {
+            $this->SetValue('Status', 'SCHARFSCHALTUNG – warte auf aktuellen Sensorstatus');
         } elseif ($this->CountMonitoredSensors() === 0) {
             $this->SetValue('Status', 'ALARMANLAGE EIN – keine GUS aktiv');
         } elseif ($this->ReadAttributeBoolean('ArmedReady')) {
@@ -2027,6 +2307,28 @@ class LCNAlarmanlage extends IPSModuleStrict
             ];
         }
 
+        $motionSensors = [];
+        foreach ($this->ReadMotionStatusMap() as $sensor) {
+            $variableID = (int) ($sensor['id'] ?? 0);
+            if ($variableID <= 0 || !IPS_VariableExists($variableID)) {
+                continue;
+            }
+            try {
+                $variable = IPS_GetVariable($variableID);
+                if ((int) ($variable['VariableType'] ?? -1) !== VARIABLETYPE_BOOLEAN) {
+                    continue;
+                }
+                $active = (bool) GetValue($variableID);
+            } catch (Throwable $e) {
+                continue;
+            }
+            $motionSensors[] = [
+                'id' => $variableID,
+                'name' => (string) ($sensor['name'] ?? ('GUS #' . $variableID)),
+                'active' => $active
+            ];
+        }
+
         $current = $this->ReadSession('CurrentSession');
         $last = $this->ReadSession('LastSession');
         $historySession = ($current !== []) ? $current : $last;
@@ -2057,6 +2359,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             'alarmQuietDeadline' => $this->ReadAttributeInteger('AlarmQuietNotBefore'),
             'rearmDeadline' => $this->ReadAttributeInteger('RearmNotBefore'),
             'sensors' => $sensors,
+            'motionSensors' => $motionSensors,
             'history' => $history
         ];
     }
@@ -2958,12 +3261,27 @@ class LCNAlarmanlage extends IPSModuleStrict
             }
         }
 
+        $emailAckRequested = $this->ReadPropertyBoolean('EmailAcknowledgeEnabled');
+        $emailAckBaseURL = $this->NormalizeEmailAckBaseURL($this->ReadPropertyString('EmailAcknowledgeBaseURL'));
+        $emailAckEnabled = false;
+        if ($emailAckRequested) {
+            if (!$emailEnabled) {
+                $warnings[] = 'E-Mail-Quittierung aktiviert, aber der E-Mail-Versand ist nicht vollständig konfiguriert';
+            } elseif ($emailAckBaseURL === '') {
+                $warnings[] = 'E-Mail-Quittierung aktiviert, aber keine gültige HTTPS-Basis-URL eingetragen';
+            } else {
+                $emailAckEnabled = true;
+            }
+        }
+
         return [[
             'pushEnabled' => $pushEnabled,
             'pushVisualizationID' => $pushVisualizationID,
             'emailEnabled' => $emailEnabled,
             'smtpID' => $smtpID,
-            'emailRecipients' => $recipients
+            'emailRecipients' => $recipients,
+            'emailAckEnabled' => $emailAckEnabled,
+            'emailAckBaseURL' => $emailAckBaseURL
         ], $warnings];
     }
 
@@ -2980,6 +3298,137 @@ class LCNAlarmanlage extends IPSModuleStrict
             $result[$key] = $mail;
         }
         return array_values($result);
+    }
+
+    private function NormalizeEmailAckBaseURL(string $Raw): string
+    {
+        $url = rtrim(trim($Raw), '/');
+        if ($url === '' || filter_var($url, FILTER_VALIDATE_URL) === false) {
+            return '';
+        }
+
+        $parts = parse_url($url);
+        if (!is_array($parts) || strtolower((string) ($parts['scheme'] ?? '')) !== 'https') {
+            return '';
+        }
+        if ((string) ($parts['host'] ?? '') === '' || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])) {
+            return '';
+        }
+
+        return $url;
+    }
+
+    private function IssueEmailAckToken(string $SessionID): string
+    {
+        if ($SessionID === '' || !$this->IsActiveSession($SessionID)) {
+            return '';
+        }
+
+        try {
+            $token = bin2hex(random_bytes(32));
+        } catch (Throwable $e) {
+            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Sicherer E-Mail-Quittierungstoken konnte nicht erzeugt werden: ' . $e->getMessage());
+            return '';
+        }
+
+        $this->WriteAttributeString('EmailAckTokenHash', hash('sha256', $token));
+        $this->WriteAttributeString('EmailAckSessionID', $SessionID);
+        $this->WriteAttributeInteger('EmailAckExpiresAt', time() + self::ACK_TOKEN_LIFETIME_SECONDS);
+        return $token;
+    }
+
+    private function ValidateEmailAckToken(string $SessionID, string $Token): array
+    {
+        if ($SessionID === '' || $Token === '') {
+            return ['ok' => false, 'status' => 400, 'message' => 'Der Quittierungslink ist unvollständig.'];
+        }
+
+        $storedSession = $this->ReadAttributeString('EmailAckSessionID');
+        $storedHash = $this->ReadAttributeString('EmailAckTokenHash');
+        $expiresAt = $this->ReadAttributeInteger('EmailAckExpiresAt');
+
+        if ($storedSession === '' || $storedHash === '' || $storedSession !== $SessionID) {
+            return ['ok' => false, 'status' => 410, 'message' => 'Dieser Quittierungslink gehört nicht mehr zur aktuellen Alarm-Session.'];
+        }
+        if ($expiresAt <= 0 || time() > $expiresAt) {
+            $this->InvalidateEmailAckToken($SessionID);
+            return ['ok' => false, 'status' => 410, 'message' => 'Dieser Quittierungslink ist abgelaufen.'];
+        }
+        if (!hash_equals($storedHash, hash('sha256', $Token))) {
+            return ['ok' => false, 'status' => 403, 'message' => 'Der Sicherheitstoken ist ungültig.'];
+        }
+
+        $session = $this->ReadSession('CurrentSession');
+        if (
+            (string) ($session['id'] ?? '') !== $SessionID
+            || (string) ($session['state'] ?? self::SESSION_NONE) !== self::SESSION_ACTIVE
+        ) {
+            return ['ok' => false, 'status' => 409, 'message' => 'Der Alarm wurde bereits beendet oder quittiert.'];
+        }
+
+        return ['ok' => true, 'status' => 200, 'message' => 'OK'];
+    }
+
+    private function InvalidateEmailAckToken(string $SessionID): void
+    {
+        $storedSession = $this->ReadAttributeString('EmailAckSessionID');
+        if ($SessionID !== '' && $storedSession !== '' && $storedSession !== $SessionID) {
+            return;
+        }
+        $this->WriteAttributeString('EmailAckTokenHash', '');
+        $this->WriteAttributeString('EmailAckSessionID', '');
+        $this->WriteAttributeInteger('EmailAckExpiresAt', 0);
+    }
+
+    private function BuildAlarmEmailBody(string $SessionID, string $SensorName, string $Time, string $AckURL): string
+    {
+        $session = htmlspecialchars($SessionID, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $sensor = htmlspecialchars($SensorName, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $time = htmlspecialchars($Time, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        $button = '';
+        $hint = 'Zum Quittieren die Symcon-App oder einen freigegebenen LCN-Lichtschalter verwenden.';
+        if ($AckURL !== '') {
+            $url = htmlspecialchars($AckURL, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $button = '<p style="margin:24px 0"><a href="' . $url . '" style="display:inline-block;background:#d32f2f;color:#fff;text-decoration:none;font-weight:700;padding:13px 20px;border-radius:8px">Alarm quittieren</a></p>';
+            $hint = 'Der Link öffnet zuerst eine Bestätigungsseite. Ein bloßer Linkabruf quittiert den Alarm nicht.';
+        }
+
+        return '<html><body style="font-family:Arial,sans-serif;color:#222;line-height:1.5">'
+            . '<h2 style="color:#d32f2f">ALARM AUSGELÖST!</h2>'
+            . '<p><strong>Zeit:</strong> ' . $time . '<br>'
+            . '<strong>Erstauslöser:</strong> ' . $sensor . '<br>'
+            . '<strong>Alarm-ID:</strong> ' . $session . '</p>'
+            . $button
+            . '<p>' . htmlspecialchars($hint, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '</p>'
+            . '<p>Die Alarmanlage selbst bleibt nach einer Quittierung eingeschaltet und geht nach freien Meldern wieder in den Scharfzustand.</p>'
+            . '</body></html>';
+    }
+
+    private function RenderEmailAckPage(string $Title, string $Message, string $SessionID, string $Token, bool $ShowConfirm): string
+    {
+        $title = htmlspecialchars($Title, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $message = htmlspecialchars($Message, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $session = htmlspecialchars($SessionID, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $token = htmlspecialchars($Token, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        $form = '';
+        if ($ShowConfirm) {
+            $form = '<form method="post" style="margin-top:24px">'
+                . '<input type="hidden" name="session" value="' . $session . '">'
+                . '<input type="hidden" name="token" value="' . $token . '">'
+                . '<button type="submit" style="width:100%;border:0;border-radius:8px;background:#d32f2f;color:#fff;padding:14px;font-size:17px;font-weight:700;cursor:pointer">Alarm jetzt quittieren</button>'
+                . '</form>';
+        }
+
+        return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            . '<title>' . $title . '</title></head>'
+            . '<body style="margin:0;background:#f3f3f3;font-family:Arial,sans-serif;color:#222">'
+            . '<main style="max-width:520px;margin:40px auto;padding:22px;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.12)">'
+            . '<h2 style="margin-top:0">' . $title . '</h2>'
+            . '<p style="line-height:1.55">' . $message . '</p>'
+            . $form
+            . '</main></body></html>';
     }
 
     private function ReadNotificationConfig(): array
@@ -3017,11 +3466,19 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ((bool) ($config['emailEnabled'] ?? false)) {
             $subject = 'ALARM ausgelöst!';
-            $body = "ALARM ausgelöst!\n\n"
-                . 'Zeit: ' . $time . "\n"
-                . 'Erstauslöser: ' . $sensorName . "\n"
-                . 'Alarm-ID: ' . $SessionID . "\n\n"
-                . 'Die Alarmanlage bleibt scharf. Zum Quittieren die Symcon-App öffnen.';
+            $ackURL = '';
+            if ((bool) ($config['emailAckEnabled'] ?? false)) {
+                $token = $this->IssueEmailAckToken($SessionID);
+                if ($token !== '') {
+                    $baseURL = rtrim((string) ($config['emailAckBaseURL'] ?? ''), '/');
+                    $ackURL = $baseURL
+                        . '/hook/lcnalarm/' . $this->InstanceID
+                        . '?session=' . rawurlencode($SessionID)
+                        . '&token=' . rawurlencode($token);
+                }
+            }
+
+            $body = $this->BuildAlarmEmailBody($SessionID, $sensorName, $time, $ackURL);
             foreach ((array) ($config['emailRecipients'] ?? []) as $recipient) {
                 $queue[] = [
                     'type' => 'email',
@@ -3129,6 +3586,116 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         return [$map, $errors];
+    }
+
+    /**
+     * Baut die reine Bewegungsmelder-Statusliste ohne neue Symcon-Variablen.
+     * Sichere Quelle sind immer die bereits konfigurierten GUS. Zusaetzlich werden
+     * native LCN-Unit-Instanzen automatisch aufgenommen, wenn ihre Bezeichnung klar
+     * auf Bewegungsmelder/GUS hinweist und sie eine Boolean-Statusvariable besitzen.
+     */
+    private function BuildMotionStatusMap(array $SensorMap): array
+    {
+        $map = [];
+
+        // Alle konfigurierten Alarm-GUS muessen immer in der Statusliste stehen,
+        // unabhaengig davon, ob ihre Bezeichnung dem automatischen Namensfilter folgt.
+        foreach ($SensorMap as $key => $sensor) {
+            $variableID = (int) ($sensor['id'] ?? $key);
+            if ($variableID <= 0 || !IPS_VariableExists($variableID)) {
+                continue;
+            }
+            $map[(string) $variableID] = [
+                'id' => $variableID,
+                'instanceID' => (int) IPS_GetParent($variableID),
+                'name' => (string) ($sensor['name'] ?? ('GUS #' . $variableID))
+            ];
+        }
+
+        try {
+            $instances = IPS_GetInstanceListByModuleID(self::LCN_UNIT_MODULE_GUID);
+        } catch (Throwable $e) {
+            $this->SendDebug('MotionStatus', 'LCN-Unit-Instanzen konnten nicht ermittelt werden: ' . $e->getMessage(), 0);
+            $instances = [];
+        }
+
+        foreach ($instances as $instanceID) {
+            $instanceID = (int) $instanceID;
+            if ($instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+                continue;
+            }
+
+            $name = trim((string) IPS_GetName($instanceID));
+            $nameLower = strtolower($name);
+            if (
+                strpos($nameLower, 'bewegungsmelder') === false
+                && strpos($nameLower, 'bewegungsmeder') === false
+                && preg_match('/(^|[^a-z0-9])gus([^a-z0-9]|$)/i', $name) !== 1
+            ) {
+                continue;
+            }
+
+            $variableID = $this->FindBooleanStatusVariable($instanceID);
+            if ($variableID <= 0 || isset($map[(string) $variableID])) {
+                continue;
+            }
+
+            $map[(string) $variableID] = [
+                'id' => $variableID,
+                'instanceID' => $instanceID,
+                'name' => ($name !== '') ? $name : ('GUS #' . $variableID)
+            ];
+        }
+
+        uasort($map, static function (array $a, array $b): int {
+            return strnatcasecmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+        });
+
+        return $map;
+    }
+
+    private function FindBooleanStatusVariable(int $InstanceID): int
+    {
+        foreach (['Status', 'STATUS'] as $ident) {
+            try {
+                $candidate = (int) IPS_GetObjectIDByIdent($ident, $InstanceID);
+                if ($candidate > 0 && IPS_VariableExists($candidate)) {
+                    $variable = IPS_GetVariable($candidate);
+                    if ((int) ($variable['VariableType'] ?? -1) === VARIABLETYPE_BOOLEAN) {
+                        return $candidate;
+                    }
+                }
+            } catch (Throwable $e) {
+            }
+        }
+
+        try {
+            $children = IPS_GetChildrenIDs($InstanceID);
+        } catch (Throwable $e) {
+            return 0;
+        }
+
+        foreach ($children as $childID) {
+            $childID = (int) $childID;
+            if ($childID <= 0 || !IPS_VariableExists($childID)) {
+                continue;
+            }
+            try {
+                $variable = IPS_GetVariable($childID);
+                if ((int) ($variable['VariableType'] ?? -1) !== VARIABLETYPE_BOOLEAN) {
+                    continue;
+                }
+                $object = IPS_GetObject($childID);
+                $ident = strtolower((string) ($object['ObjectIdent'] ?? ''));
+                $childName = strtolower((string) ($object['ObjectName'] ?? ''));
+                if ($ident === 'status' || $childName === 'status') {
+                    return $childID;
+                }
+            } catch (Throwable $e) {
+            }
+        }
+
+        return 0;
     }
 
     private function BuildPanicLightMap(array $SensorMap): array
@@ -3290,6 +3857,26 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->WriteAttributeString('RegisteredSensorIDs', '[]');
     }
 
+    private function UnregisterOldMotionStatusMessages(): void
+    {
+        $old = json_decode($this->ReadAttributeString('RegisteredMotionStatusIDs'), true);
+        if (!is_array($old)) {
+            $old = [];
+        }
+
+        foreach ($old as $variableID) {
+            $variableID = (int) $variableID;
+            if ($variableID <= 0) {
+                continue;
+            }
+            $this->UnregisterMessage($variableID, VM_UPDATE);
+            $this->UnregisterMessage($variableID, OM_UNREGISTER);
+            $this->UnregisterReference($variableID);
+        }
+
+        $this->WriteAttributeString('RegisteredMotionStatusIDs', '[]');
+    }
+
     private function UnregisterOldAcknowledgeMessages(): void
     {
         $old = json_decode($this->ReadAttributeString('RegisteredAcknowledgeIDs'), true);
@@ -3323,6 +3910,12 @@ class LCNAlarmanlage extends IPSModuleStrict
     private function ReadSensorMap(): array
     {
         $decoded = json_decode($this->GetBuffer('SensorMap'), true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function ReadMotionStatusMap(): array
+    {
+        $decoded = json_decode($this->GetBuffer('MotionStatusMap'), true);
         return is_array($decoded) ? $decoded : [];
     }
 
@@ -3414,6 +4007,12 @@ class LCNAlarmanlage extends IPSModuleStrict
         return isset($this->ReadSensorMap()[(string) $VariableID]);
     }
 
+    private function IsMotionStatusVariable(int $VariableID): bool
+    {
+        return isset($this->ReadMotionStatusMap()[(string) $VariableID])
+            && !$this->IsSensorVariable($VariableID);
+    }
+
     private function IsAcknowledgeVariable(int $VariableID): bool
     {
         return isset($this->ReadAcknowledgeMap()[(string) $VariableID]);
@@ -3433,6 +4032,134 @@ class LCNAlarmanlage extends IPSModuleStrict
     {
         $decoded = json_decode($this->GetBuffer('SensorStates'), true);
         return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * Einmalige LCN-Statusanforderung pro tatsächlichem Aktormodul. Es wird nicht pro
+     * Sensor gepollt. Erwartet werden nur native LCN-Booleanvariablen, deren technische
+     * Kette LCN Unit -> ConnectionID -> LCN Modul eindeutig validiert werden kann.
+     */
+    private function RequestStartupSensorStatus(array $SensorMap): array
+    {
+        $expected = [];
+        $actorModules = [];
+
+        foreach ($SensorMap as $key => $sensor) {
+            $variableID = (int) ($sensor['id'] ?? $key);
+            if ($variableID <= 0 || !IPS_VariableExists($variableID)) {
+                continue;
+            }
+
+            // Jeder konfigurierte GUS muss nach einem Start mindestens eine frische
+            // VM_UPDATE-Bestätigung liefern. Auch wenn seine technische LCN-Kette
+            // unerwartet nicht auflösbar ist, darf er deshalb NICHT stillschweigend
+            // aus der Erwartungsliste fallen. In diesem Fehlerfall bleibt die Anlage
+            // fail-safe nicht auslösebereit, bis der Sensor selbst aktualisiert wurde.
+            $expected[$variableID] = $variableID;
+
+            try {
+                $object = IPS_GetObject($variableID);
+                $unitID = (int) ($object['ParentID'] ?? 0);
+                if ($unitID <= 0 || !IPS_InstanceExists($unitID)) {
+                    continue;
+                }
+
+                $unit = IPS_GetInstance($unitID);
+                if (strtoupper((string) ($unit['ModuleInfo']['ModuleID'] ?? '')) !== strtoupper(self::LCN_UNIT_MODULE_GUID)) {
+                    continue;
+                }
+
+                $actorModuleID = (int) ($unit['ConnectionID'] ?? 0);
+                if ($actorModuleID <= 0 || !IPS_InstanceExists($actorModuleID)) {
+                    continue;
+                }
+
+                $actor = IPS_GetInstance($actorModuleID);
+                if (strtoupper((string) ($actor['ModuleInfo']['ModuleID'] ?? '')) !== strtoupper(self::LCN_MODULE_MODULE_GUID)) {
+                    continue;
+                }
+
+                $actorModules[$actorModuleID] = $actorModuleID;
+            } catch (Throwable $e) {
+                $this->SendDebug('StartupSync', 'Sensor #' . $variableID . ': ' . $e->getMessage(), 0);
+            }
+        }
+
+        // Erwartungsliste VOR dem Request veröffentlichen, damit auch eine sehr
+        // schnelle/synchrone VM_UPDATE-Antwort bereits gezählt werden kann.
+        if ($this->GetBuffer('RuntimeReady') !== '1' && (int) $this->GetBuffer('StartupSyncAttempt') === 0) {
+            $this->SetBuffer('StartupExpectedSensorIDs', $this->Encode(array_values($expected)));
+        }
+
+        foreach ($actorModules as $actorModuleID) {
+            try {
+                if (!function_exists('LCN_RequestStatus') || !LCN_RequestStatus((int) $actorModuleID)) {
+                    $this->SendDebug('StartupSync', 'LCN_RequestStatus #' . $actorModuleID . ' nicht bestätigt', 0);
+                }
+            } catch (Throwable $e) {
+                $this->SendDebug('StartupSync', 'LCN_RequestStatus #' . $actorModuleID . ': ' . $e->getMessage(), 0);
+            }
+        }
+
+        return [
+            'expectedSensorIDs' => array_values($expected),
+            'actorModuleIDs' => array_values($actorModules)
+        ];
+    }
+
+    private function ReadStartupIDBuffer(string $Name): array
+    {
+        $decoded = json_decode($this->GetBuffer($Name), true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+        $ids = [];
+        foreach ($decoded as $id) {
+            $id = (int) $id;
+            if ($id > 0) {
+                $ids[$id] = $id;
+            }
+        }
+        return array_values($ids);
+    }
+
+    private function IsStartupSensorSyncComplete(): bool
+    {
+        $expected = $this->ReadStartupIDBuffer('StartupExpectedSensorIDs');
+        if ($expected === []) {
+            return true;
+        }
+        $seen = $this->ReadStartupIDBuffer('StartupSeenSensorIDs');
+        return array_diff($expected, $seen) === [];
+    }
+
+    private function MarkStartupSensorSeen(int $VariableID): void
+    {
+        if ($VariableID <= 0) {
+            return;
+        }
+
+        $expected = $this->ReadStartupIDBuffer('StartupExpectedSensorIDs');
+        if ($expected === [] || !in_array($VariableID, $expected, true)) {
+            return;
+        }
+
+        $seen = $this->ReadStartupIDBuffer('StartupSeenSensorIDs');
+        if (in_array($VariableID, $seen, true)) {
+            return;
+        }
+
+        $seen[] = $VariableID;
+        $this->SetBuffer('StartupSeenSensorIDs', $this->Encode(array_values(array_unique($seen))));
+
+        if ($this->IsStartupSensorSyncComplete()) {
+            $this->SetBuffer('StartupSyncIncomplete', '0');
+            // Falls die letzte erwartete Rückmeldung erst nach Ende der Schutzphase
+            // eintrifft, wird der Zustand nochmals ohne Alarmtrigger rekonstruiert.
+            if ($this->GetBuffer('RuntimeReady') === '1') {
+                $this->SetTimerInterval('StartupGuard', 1);
+            }
+        }
     }
 
     private function AreAllMonitoredSensorsClear(array $States): bool
@@ -3570,7 +4297,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
 
             if ($sessionState === self::SESSION_ACTIVE) {
-                if ($this->AreAllMonitoredSensorsClear($states)) {
+                if ($this->IsStartupSensorSyncComplete() && $this->AreAllMonitoredSensorsClear($states)) {
                     $duration = max(10, $this->ReadPropertyInteger('AlarmDurationSeconds'));
                     $this->WriteAttributeInteger('AlarmQuietNotBefore', time() + $duration);
                     $scheduleAlarmAfterrun = true;
@@ -3580,7 +4307,7 @@ class LCNAlarmanlage extends IPSModuleStrict
                     $cancelAlarmAfterrun = true;
                 }
             } elseif ($sessionState === self::SESSION_REARM_WAIT) {
-                if ($this->AreAllMonitoredSensorsClear($states)) {
+                if ($this->IsStartupSensorSyncComplete() && $this->AreAllMonitoredSensorsClear($states)) {
                     $this->WriteAttributeInteger(
                         'RearmNotBefore',
                         time() + max(0, $this->ReadPropertyInteger('RearmDelaySeconds'))
@@ -3591,7 +4318,10 @@ class LCNAlarmanlage extends IPSModuleStrict
                     $cancelRearm = true;
                 }
             } elseif ($sessionState === self::SESSION_NONE && (bool) $this->GetValue('Arm')) {
-                $ready = $this->CountMonitoredSensors() > 0 && $this->AreAllMonitoredSensorsClear($states);
+                $ready = $this->GetBuffer('RuntimeReady') === '1'
+                    && $this->IsStartupSensorSyncComplete()
+                    && $this->CountMonitoredSensors() > 0
+                    && $this->AreAllMonitoredSensorsClear($states);
                 $this->WriteAttributeBoolean('ArmedReady', $ready);
             }
         } finally {
