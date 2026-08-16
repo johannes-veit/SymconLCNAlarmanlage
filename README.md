@@ -1,5 +1,9 @@
 # LCN Alarmanlage für IP-Symcon 9
 
+## Version 0.1.19
+
+0.1.19 ist eine reine, rollbackfähige Visualisierungskorrektur auf Basis von 0.1.18. Für Smartphone-WebViews wird die komplette HTML-Kachel nun in einem expliziten Touch-Scroll-Container dargestellt (`overflow-y: auto`, `-webkit-overflow-scrolling: touch`, `touch-action: pan-y`). Lange aufgeklappte Bereiche wie **Überwachte Räume**, **Status Bewegungsmelder** und **Protokoll** lassen sich dadurch in der Symcon-App vertikal scrollen. Auf schmalen Displays besitzt die Historie bewusst kein eigenes verschachteltes Scrollfenster mehr; sie wächst in den Hauptscrollbereich hinein. Alle Bedienelemente und JavaScript-Funktionen sind gegenüber 0.1.18 unverändert. Alarmkern, GUS-Auswertung, Lichtzustandswiederherstellung, WOL/Alarmvideo, Neustartschutz, E-Mail-Quittierung, Variablen und Polling-Verhalten bleiben unverändert.
+
 ## Version 0.1.18
 
 0.1.18 ist eine reine, rollbackfähige Visualisierungskorrektur auf Basis von 0.1.17. Der Alarmkern und `module.php` bleiben byteidentisch zu 0.1.17. Für die HTML-Kachel werden die von der Symcon-Kachelvisualisierung bereitgestellten CSS-Farben `--content-color` und `--card-color` verwendet. Die bisherige globale CSS-Angabe `color-scheme: light dark` und die Systemfarbe `Canvas` wurden entfernt, weil diese Kombination in der Smartphone-App je nach WebView/Farbschema zu schwarzem Kopfbereich bzw. unsichtbarer Schrift führen konnte. Desktop- und Smartphone-Darstellung verwenden nun dieselben Symcon-Farben. WOL, Alarmvideo, Lichtzustandswiederherstellung, GUS-Logik, Neustartschutz, E-Mail-Quittierung, Variablen und Polling-Verhalten sind unverändert.

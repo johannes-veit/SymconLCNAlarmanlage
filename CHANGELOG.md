@@ -1,3 +1,12 @@
+## 0.1.19
+
+- Smartphone-Scrollen für lange aufgeklappte HTML-Bereiche korrigiert
+- expliziter Touch-Scroll-Container für Android-/iOS-WebViews
+- auf Smartphone kein verschachteltes Scrollfenster mehr in der Historie
+- alle IDs, Bedienelemente und JavaScript-Aktionen der Desktop-Variante bleiben erhalten
+- `module.php`, MediaServer, Alarmkern, WOL/Video, Lichtlogik, E-Mail-Quittierung und Neustartschutz unverändert zu 0.1.18
+- keine zusätzlichen Variablen, Timer oder LCN-Abfragen
+
 ## 0.1.18
 
 - reine Visualisierungskorrektur; Alarmkern und `LCNAlarmanlage/module.php` byteidentisch zu 0.1.17

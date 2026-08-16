@@ -1,4 +1,4 @@
-<!-- LCN Alarmanlage visualization 0.1.18: Symcon theme-safe mobile/desktop rendering -->
+<!-- LCN Alarmanlage visualization 0.1.19: explicit touch-scroll container, mobile/desktop feature parity -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -6,14 +6,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 * { box-sizing: border-box; }
-body {
+html, body {
     margin: 0;
-    padding: 72px 10px 12px;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
     background: transparent;
     color: var(--content-color, #202124);
     font-family: Poppins, "Segoe UI", Arial, sans-serif;
     font-size: 14px;
     line-height: 1.45;
+    -webkit-tap-highlight-color: transparent;
+}
+/* Eigener Scroll-Container statt implizitem body-Scrolling. Das ist in den
+   Android-/iOS-WebViews der Symcon-App robuster, insbesondere bei langen
+   aufgeklappten <details>-Bereichen. */
+.scroll-pane {
+    position: absolute;
+    inset: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    overscroll-behavior-y: contain;
+    scrollbar-width: thin;
+    padding: 72px 10px max(12px, env(safe-area-inset-bottom));
 }
 /* Die native Symcon-Kachelueberschrift liegt ueber dem HTML-Bereich.
    Dieser feste Hintergrundstreifen verhindert, dass beim Scrollen Inhalt
@@ -92,7 +109,9 @@ details {
 summary {
     cursor: pointer; user-select: none; font-weight: 500; padding: 6px 1px;
     list-style: none;
+    touch-action: manipulation;
 }
+button, input, label.switch { touch-action: manipulation; }
 summary::-webkit-details-marker { display: none; }
 summary:before { content: "›"; display: inline-block; margin-right: 8px; transform: rotate(0deg); transition: .15s; }
 details[open] > summary:before { transform: rotate(90deg); }
@@ -154,13 +173,21 @@ details[open] > summary:before { transform: rotate(90deg); }
 .history-time { opacity: .72; font-size: .9em; margin-top: 2px; }
 .muted { opacity: .65; }
 @media (max-width: 520px) {
-    body { padding: 72px 9px 12px; }
+    .scroll-pane {
+        padding: 72px 9px max(18px, env(safe-area-inset-bottom));
+        overscroll-behavior-y: auto;
+    }
     .protocol-grid { grid-template-columns: 1fr; gap: 2px; }
     .protocol-grid .pv { text-align: left; margin-bottom: 5px; }
+    /* Kein verschachteltes Scrollfenster auf dem Smartphone. Die gesamte
+       Kachel scrollt; dadurch bleibt die Touch-Geste auch in der Historie
+       und in langen aufgeklappten Kategorien eindeutig. */
+    .history { max-height: none; overflow: visible; }
 }
 </style>
 </head>
 <body>
+<div class="scroll-pane" id="scrollPane">
 <div class="wrap">
     <div class="row">
         <div class="label">Alarmanlage EIN/AUS</div>
@@ -205,6 +232,7 @@ details[open] > summary:before { transform: rotate(90deg); }
             <div id="history" class="history"><div class="history-row muted">Keine Bewegung gespeichert</div></div>
         </div>
     </details>
+</div>
 </div>
 <script>
 let state = __INITIAL_STATE__;
