@@ -1,3 +1,14 @@
+## 0.1.23
+
+- Fehler im 0.1.22-Eingabepfad behoben: Touch-Handler werden nicht mehr nur bei vollständig fehlendem `PointerEvent` installiert
+- Finger-Scrolling verwendet immer klassische `touchstart`/`touchmove`/`touchend`-Handler; Pointer Events bleiben parallel für Maus/Stift bzw. als zweiter Pfad erhalten
+- `touchmove`/`touchend` liegen auf Dokumentebene im Capture-Pfad, damit der Drag beim Verlassen von Panel/Scrollgriff nicht abbricht
+- Scrollgriff verwendet denselben dualen Touch-/Pointer-Pfad
+- Tap auf die Scrollleiste bleibt als zusätzlicher Fallback erhalten
+- Scrollposition, Schalter, Pending-Schutz, Zeitfelder und Live-Updates bleiben erhalten
+- `LCNAlarmanlage/module.php`, MediaServer, Alarmkern, GUS-/Lichtlogik, E-Mail, Neustartschutz, WOL und Video gegenüber 0.1.22 byteidentisch
+- keine zusätzlichen Symcon-Variablen, Timer, Properties oder LCN-Abfragen
+
 ## 0.1.22
 
 - Smartphone-Aufklappbereiche verwenden keinen verschachtelten nativen WebView-Scroll mehr

@@ -1,5 +1,13 @@
 # LCN Alarmanlage für IP-Symcon 9
 
+## Version 0.1.23
+
+0.1.23 korrigiert gezielt den weiterhin wirkungslosen mobilen Scrollmechanismus aus 0.1.22. Ursache war ein Logikfehler im JavaScript: Touch-Handler wurden nur dann installiert, wenn `window.PointerEvent` vollständig fehlte. Aktuelle Smartphone-WebViews können `PointerEvent` zwar anbieten, Fingerbewegungen innerhalb eingebetteter HTML-Kacheln aber trotzdem über klassische Touch-Events liefern. In diesem Fall war in 0.1.22 die Scrollleiste sichtbar, ohne dass Wischen oder Ziehen einen funktionierenden Eingabepfad hatte.
+
+Ab 0.1.23 werden Touch-Events **immer** installiert. Pointer-Events bleiben parallel als zweiter Pfad für Maus/Stift bzw. WebViews ohne nutzbare Touch-Events erhalten. `touchmove`/`touchend` werden auf Dokumentebene abgefangen, sodass eine Scrollbewegung nicht abbricht, wenn der Finger den Panelbereich oder Scrollgriff während des Ziehens kurz verlässt. Der Scrollgriff besitzt denselben dualen Eingabepfad; ein Tap auf die Scrollleiste bleibt als zusätzlicher Fallback erhalten.
+
+Schalter, Pending-Guards, Zeitfelder, Zustands-Cache, feldweise Visualisierungsupdates, Alarmkern, GUS-Auswertung, Quittierung, Lichtzustandswiederherstellung, Neustartschutz, E-Mail-Quittierung sowie Samsung-WOL/Alarmvideo bleiben unverändert. `LCNAlarmanlage/module.php` und der interne MediaServer sind byteidentisch zu 0.1.22. Es entstehen keine zusätzlichen Symcon-Variablen, Timer, Properties oder LCN-Abfragen.
+
 ## Version 0.1.22
 
 0.1.22 korrigiert ausschließlich das Scrollen der drei mobilen Aufklappbereiche. Die Symcon-App-WebView hat die in 0.1.21 sichtbaren nativen `overflow`-Scrollleisten zwar dargestellt, Touch-/Drag-Eingaben aber nicht zuverlässig an die verschachtelten Scrollcontainer weitergereicht. Mobil wird deshalb nicht mehr auf verschachteltes natives WebView-Scrolling vertraut: **Überwachte Räume**, **Status Bewegungsmelder** und **Protokoll** besitzen nun einen WebView-unabhängigen, eigenen Scrollmechanismus. Wischen verschiebt den Inhalt direkt per Pointer-/Touch-Ereignis; die sichtbare Scrollleiste ist ebenfalls eine eigene bedienbare Leiste und kann gezogen bzw. angetippt werden.

@@ -1,4 +1,4 @@
-<!-- LCN Alarmanlage visualization 0.1.22: mobile-safe controls + WebView-independent manual panel scrolling -->
+<!-- LCN Alarmanlage visualization 0.1.23: mobile-safe controls + dual touch/pointer panel scrolling -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -896,11 +896,17 @@ function refreshAllPanelScrollers() {
     for (const panel of document.querySelectorAll('.accordion-panel')) refreshPanelScroller(panel);
 }
 
+function touchInputAvailable() {
+    return ('ontouchstart' in window) || Number(navigator.maxTouchPoints || 0) > 0;
+}
+
 function installManualPanelScroller(panel) {
     if (!panel) return;
     const bar = panel.querySelector('.manual-scrollbar');
     const thumb = panel.querySelector('.manual-scrollbar-thumb');
+
     let activePointer = null;
+    let activeTouchID = null;
     let startY = 0;
     let startTop = 0;
     let draggingContent = false;
@@ -910,43 +916,85 @@ function installManualPanelScroller(panel) {
         if (!mobileManualScrollEnabled()) return false;
         const metrics = panelMetrics(panel);
         if (metrics.max <= 1) return false;
-        activePointer = id;
-        startY = y;
+        startY = Number(y || 0);
         startTop = getPanelScrollTop(panel);
         draggingContent = false;
         return true;
     };
-    const moveContent = (id, y, prevent) => {
-        if (activePointer !== id) return false;
-        const delta = startY - y;
+    const moveContent = (y, prevent) => {
+        const delta = startY - Number(y || 0);
         if (!draggingContent && Math.abs(delta) < 5) return false;
         draggingContent = true;
         setPanelScrollTop(panel, startTop + delta);
         if (prevent) prevent();
         return true;
     };
-    const endContent = id => {
-        if (activePointer !== id) return;
+    const finishContent = () => {
         if (draggingContent) suppressClickUntil = Date.now() + 350;
         activePointer = null;
+        activeTouchID = null;
         draggingContent = false;
         saveUIState();
     };
 
-    /* Pointer Events sind der primaere Pfad fuer aktuelle Android-/iOS-WebViews.
-       touch-action:none am Panel verhindert, dass die umgebende Symcon-Kachel
-       die Geste vor diesem Handler uebernimmt. */
+    /* WICHTIG fuer die Symcon-App:
+       Viele aktuelle WebViews melden window.PointerEvent, liefern bei einem
+       Finger-Drag innerhalb eingebetteter HTML-Kacheln aber trotzdem nur die
+       klassischen TouchEvents zuverlaessig. 0.1.22 installierte TouchEvents
+       nur wenn PointerEvent KOMPLETT fehlte. Dadurch war der sichtbare
+       Scrollmechanismus auf solchen Geraeten ohne Eingabepfad.
+
+       0.1.23 installiert deshalb TouchEvents IMMER. PointerEvents bleiben als
+       zweiter Pfad fuer Maus/Stift bzw. WebViews ohne TouchEvents erhalten. */
     panel.addEventListener('pointerdown', event => {
         if (!mobileManualScrollEnabled()) return;
+        if (event.pointerType === 'touch' && touchInputAvailable()) return;
         if (event.pointerType === 'mouse' && event.button !== 0) return;
         if (bar && bar.contains(event.target)) return;
-        beginContent(event.pointerId, event.clientY);
+        if (!beginContent(`p${event.pointerId}`, event.clientY)) return;
+        activePointer = event.pointerId;
+        try { panel.setPointerCapture(event.pointerId); } catch (_) {}
     });
     panel.addEventListener('pointermove', event => {
-        moveContent(event.pointerId, event.clientY, () => { if (event.cancelable) event.preventDefault(); });
+        if (activePointer !== event.pointerId) return;
+        moveContent(event.clientY, () => { if (event.cancelable) event.preventDefault(); });
     }, { passive: false });
-    panel.addEventListener('pointerup', event => endContent(event.pointerId));
-    panel.addEventListener('pointercancel', event => endContent(event.pointerId));
+    const finishPointer = event => {
+        if (activePointer !== event.pointerId) return;
+        try { panel.releasePointerCapture(event.pointerId); } catch (_) {}
+        finishContent();
+    };
+    panel.addEventListener('pointerup', finishPointer);
+    panel.addEventListener('pointercancel', finishPointer);
+    panel.addEventListener('lostpointercapture', event => {
+        if (activePointer === event.pointerId) finishContent();
+    });
+
+    /* Touch-Pfad wird unabhaengig von window.PointerEvent installiert.
+       touchmove/touchend liegen absichtlich am document im Capture-Pfad,
+       damit der Drag weiterlaeuft, wenn der Finger den Panelbereich oder den
+       Scrollgriff waehrend der Bewegung kurz verlaesst. */
+    panel.addEventListener('touchstart', event => {
+        if (!mobileManualScrollEnabled() || event.touches.length !== 1) return;
+        if (bar && bar.contains(event.target)) return;
+        const touch = event.touches[0];
+        if (!beginContent(`t${touch.identifier}`, touch.clientY)) return;
+        activeTouchID = touch.identifier;
+    }, { passive: true });
+    document.addEventListener('touchmove', event => {
+        if (activeTouchID == null) return;
+        const touch = Array.from(event.touches).find(t => t.identifier === activeTouchID);
+        if (!touch) return;
+        moveContent(touch.clientY, () => { if (event.cancelable) event.preventDefault(); });
+    }, { passive: false, capture: true });
+    const finishTouch = event => {
+        if (activeTouchID == null) return;
+        const stillActive = Array.from(event.touches || []).some(t => t.identifier === activeTouchID);
+        if (!stillActive) finishContent();
+    };
+    document.addEventListener('touchend', finishTouch, { passive: true, capture: true });
+    document.addEventListener('touchcancel', finishTouch, { passive: true, capture: true });
+
     panel.addEventListener('click', event => {
         if (Date.now() < suppressClickUntil) {
             event.preventDefault();
@@ -954,27 +1002,9 @@ function installManualPanelScroller(panel) {
         }
     }, true);
 
-    /* Fallback fuer alte WebViews ohne PointerEvent. */
-    if (!window.PointerEvent) {
-        let touchID = null;
-        panel.addEventListener('touchstart', event => {
-            if (!mobileManualScrollEnabled() || event.touches.length !== 1) return;
-            if (bar && bar.contains(event.target)) return;
-            touchID = event.touches[0].identifier;
-            beginContent(`t${touchID}`, event.touches[0].clientY);
-        }, { passive: true });
-        panel.addEventListener('touchmove', event => {
-            if (touchID == null) return;
-            const touch = Array.from(event.touches).find(t => t.identifier === touchID);
-            if (!touch) return;
-            moveContent(`t${touchID}`, touch.clientY, () => { if (event.cancelable) event.preventDefault(); });
-        }, { passive: false });
-        panel.addEventListener('touchend', () => { if (touchID != null) endContent(`t${touchID}`); touchID = null; }, { passive: true });
-        panel.addEventListener('touchcancel', () => { if (touchID != null) endContent(`t${touchID}`); touchID = null; }, { passive: true });
-    }
-
     if (bar && thumb) {
         let barPointer = null;
+        let barTouchID = null;
         let barStartY = 0;
         let barStartTop = 0;
 
@@ -985,12 +1015,23 @@ function installManualPanelScroller(panel) {
             const thumbHeight = Math.max(28, Math.min(trackHeight, trackHeight * (metrics.viewport / metrics.contentHeight)));
             const travel = Math.max(1, trackHeight - thumbHeight);
             const ratio = metrics.max / travel;
-            setPanelScrollTop(panel, barStartTop + ((y - barStartY) * ratio));
+            setPanelScrollTop(panel, barStartTop + ((Number(y || 0) - barStartY) * ratio));
             if (prevent) prevent();
+        };
+        const jumpBar = y => {
+            const rect = bar.getBoundingClientRect();
+            const metrics = panelMetrics(panel);
+            if (metrics.max <= 1) return;
+            const trackHeight = Math.max(1, rect.height);
+            const thumbHeight = Math.max(28, Math.min(trackHeight, trackHeight * (metrics.viewport / metrics.contentHeight)));
+            const travel = Math.max(1, trackHeight - thumbHeight);
+            const targetThumbTop = Math.max(0, Math.min(travel, Number(y || 0) - rect.top - thumbHeight / 2));
+            setPanelScrollTop(panel, (targetThumbTop / travel) * metrics.max, true);
         };
 
         thumb.addEventListener('pointerdown', event => {
             if (!mobileManualScrollEnabled()) return;
+            if (event.pointerType === 'touch' && touchInputAvailable()) return;
             event.stopPropagation();
             if (event.cancelable) event.preventDefault();
             barPointer = event.pointerId;
@@ -1003,64 +1044,70 @@ function installManualPanelScroller(panel) {
             if (barPointer !== event.pointerId) return;
             moveBar(event.clientY, () => { if (event.cancelable) event.preventDefault(); });
         }, { passive: false });
-        const endBar = event => {
+        const endBarPointer = event => {
             if (barPointer !== event.pointerId) return;
             barPointer = null;
             thumb.classList.remove('dragging');
             saveUIState();
         };
-        thumb.addEventListener('pointerup', endBar);
-        thumb.addEventListener('pointercancel', endBar);
-        thumb.addEventListener('lostpointercapture', endBar);
+        thumb.addEventListener('pointerup', endBarPointer);
+        thumb.addEventListener('pointercancel', endBarPointer);
+        thumb.addEventListener('lostpointercapture', endBarPointer);
 
         bar.addEventListener('pointerdown', event => {
             if (!mobileManualScrollEnabled() || event.target === thumb) return;
+            if (event.pointerType === 'touch' && touchInputAvailable()) return;
             event.stopPropagation();
             if (event.cancelable) event.preventDefault();
-            const rect = bar.getBoundingClientRect();
-            const metrics = panelMetrics(panel);
-            if (metrics.max <= 1) return;
-            const trackHeight = Math.max(1, rect.height);
-            const thumbHeight = Math.max(28, Math.min(trackHeight, trackHeight * (metrics.viewport / metrics.contentHeight)));
-            const travel = Math.max(1, trackHeight - thumbHeight);
-            const targetThumbTop = Math.max(0, Math.min(travel, event.clientY - rect.top - thumbHeight / 2));
-            setPanelScrollTop(panel, (targetThumbTop / travel) * metrics.max, true);
+            jumpBar(event.clientY);
         }, { passive: false });
 
-        if (!window.PointerEvent) {
-            let thumbTouchY = null;
-            let thumbTouchTop = 0;
-            thumb.addEventListener('touchstart', event => {
-                if (!mobileManualScrollEnabled() || event.touches.length !== 1) return;
-                event.stopPropagation();
-                if (event.cancelable) event.preventDefault();
-                thumbTouchY = event.touches[0].clientY;
-                thumbTouchTop = getPanelScrollTop(panel);
-                barStartY = thumbTouchY;
-                barStartTop = thumbTouchTop;
-                thumb.classList.add('dragging');
-            }, { passive: false });
-            thumb.addEventListener('touchmove', event => {
-                if (thumbTouchY == null || event.touches.length !== 1) return;
-                moveBar(event.touches[0].clientY, () => { if (event.cancelable) event.preventDefault(); });
-            }, { passive: false });
-            const endThumbTouch = () => { thumbTouchY = null; thumb.classList.remove('dragging'); saveUIState(); };
-            thumb.addEventListener('touchend', endThumbTouch, { passive: true });
-            thumb.addEventListener('touchcancel', endThumbTouch, { passive: true });
-            bar.addEventListener('touchstart', event => {
-                if (!mobileManualScrollEnabled() || event.target === thumb || event.touches.length !== 1) return;
-                event.stopPropagation();
-                if (event.cancelable) event.preventDefault();
-                const rect = bar.getBoundingClientRect();
-                const metrics = panelMetrics(panel);
-                if (metrics.max <= 1) return;
-                const trackHeight = Math.max(1, rect.height);
-                const thumbHeight = Math.max(28, Math.min(trackHeight, trackHeight * (metrics.viewport / metrics.contentHeight)));
-                const travel = Math.max(1, trackHeight - thumbHeight);
-                const targetThumbTop = Math.max(0, Math.min(travel, event.touches[0].clientY - rect.top - thumbHeight / 2));
-                setPanelScrollTop(panel, (targetThumbTop / travel) * metrics.max, true);
-            }, { passive: false });
-        }
+        /* Touch-Drag des Scrollgriffs: ebenfalls IMMER aktiv, nicht nur bei
+           fehlendem PointerEvent. */
+        thumb.addEventListener('touchstart', event => {
+            if (!mobileManualScrollEnabled() || event.touches.length !== 1) return;
+            event.stopPropagation();
+            if (event.cancelable) event.preventDefault();
+            const touch = event.touches[0];
+            barTouchID = touch.identifier;
+            barStartY = touch.clientY;
+            barStartTop = getPanelScrollTop(panel);
+            thumb.classList.add('dragging');
+        }, { passive: false });
+        document.addEventListener('touchmove', event => {
+            if (barTouchID == null) return;
+            const touch = Array.from(event.touches).find(t => t.identifier === barTouchID);
+            if (!touch) return;
+            moveBar(touch.clientY, () => { if (event.cancelable) event.preventDefault(); });
+        }, { passive: false, capture: true });
+        const endBarTouch = event => {
+            if (barTouchID == null) return;
+            const stillActive = Array.from(event.touches || []).some(t => t.identifier === barTouchID);
+            if (!stillActive) {
+                barTouchID = null;
+                thumb.classList.remove('dragging');
+                saveUIState();
+            }
+        };
+        document.addEventListener('touchend', endBarTouch, { passive: true, capture: true });
+        document.addEventListener('touchcancel', endBarTouch, { passive: true, capture: true });
+
+        bar.addEventListener('touchstart', event => {
+            if (!mobileManualScrollEnabled() || event.target === thumb || event.touches.length !== 1) return;
+            event.stopPropagation();
+            if (event.cancelable) event.preventDefault();
+            jumpBar(event.touches[0].clientY);
+        }, { passive: false });
+
+        /* Click ist ein letzter Fallback fuer WebViews, die Bewegungsereignisse
+           filtern, Taps aber normal weitergeben. Damit kann zumindest die
+           sichtbare Scrollleiste positionsweise bedient werden. */
+        bar.addEventListener('click', event => {
+            if (!mobileManualScrollEnabled() || event.target === thumb) return;
+            event.preventDefault();
+            event.stopPropagation();
+            jumpBar(event.clientY);
+        });
     }
 
     panel.addEventListener('scroll', () => {
