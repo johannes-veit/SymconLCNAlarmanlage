@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Version 0.1.13: korrigiert ausschließlich die Samsung-TV-Nachlaufsteuerung. WOL bleibt unverändert wie in 0.1.11/Alarmvideo-Test 0.2.6; nach Alarmende gibt es keinen wiederholten AUS-Befehl mehr. Die kompakte HTML-Kachel aus 0.1.11 mit aufklappbaren Bereichen „Überwachte Räume“ und „Protokoll“ bleibt erhalten."
+            "label": "Version 0.1.14: Paniklicht-Zustände werden vor jedem Alarm gespeichert und danach exakt wiederhergestellt. Nur zuvor ausgeschaltete Paniklichter werden bei Alarm eingeschaltet. Quittieren kann automatisch jeder installierte LCN-Lichtschalter aus LCN Light Control 0.6.1 – unabhängig davon, ob er Mitglied der Panikgruppe ist. Die Visualisierung erhält oben zusätzlichen Abstand gegen die Kachelüberschrift."
         },
         {
             "type": "List",
@@ -64,7 +64,7 @@
         {
             "type": "List",
             "name": "AcknowledgeLights",
-            "caption": "Panik-Lichter / Quittierung über Lichttaster",
+            "caption": "Panik-Lichter bei Alarm",
             "rowCount": 6,
             "add": true,
             "delete": true,
@@ -104,7 +104,7 @@
         },
         {
             "type": "Label",
-            "label": "Die unten ausgewählten Boolean-Statusvariablen müssen eine nutzbare Symcon-Aktion besitzen. Quittierung erfolgt nur bei einer echten EIN→AUS-Flanke während eines aktiven Alarms. PANIK EIN kann sich dadurch nicht selbst quittieren."
+            "label": "Hier werden nur die Lichter ausgewählt, die der Alarm als Panikbeleuchtung einschalten darf. Der Alarm merkt sich vor der ersten Alarmaktion den Zustand ALLER installierten LCN-Lichter. Bei Alarm werden ausschließlich Paniklichter eingeschaltet, die vorher AUS waren. Bei Quittierung oder automatischem Alarmende wird der komplette gespeicherte Lichtzustand wiederhergestellt. Jede LCN-Lichtinstanz kann den aktiven Alarm quittieren; nicht zur Panikgruppe gehörende Lichtschalter quittieren bei jeder echten Zustandsänderung, Paniklichter bei EIN→AUS."
         },
         {
             "type": "CheckBox",
@@ -215,7 +215,7 @@
     "actions": [
         {
             "type": "Label",
-            "label": "Kein Polling: GUS und Panik-Lichter werden ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Der Alarm-Nachlauf ist ein lokaler Einmal-Timer und läuft nur bei vollständig freiem Melderfeld. Push/E-Mail werden nur beim ersten Trigger versendet."
+            "label": "Kein Alarm-Polling: GUS und LCN-Licht-Status werden über spontane VM_UPDATE-Meldungen ausgewertet. Für Quittierung werden alle Instanzen des Moduls LCNLight automatisch registriert; die Panik-Lichterliste legt nur fest, welche Lichter beim Alarm eingeschaltet werden. Lichtzustände werden pro Alarm-Session gespeichert und danach wiederhergestellt."
         }
     ]
 }

@@ -14,6 +14,8 @@ class LCNAlarmanlage extends IPSModuleStrict
 
     private const MAX_EVENTS_PER_SESSION = 1000;
     private const SAMSUNG_TIZEN_MODULE_GUID = '{65BF76B4-042C-4971-A5CC-292FA5E49C86}';
+    // Exakte Modul-GUID von LCN Light Control 0.6.1 (LCNLight).
+    private const LCN_LIGHT_MODULE_GUID = '{331B7F25-09CF-4611-9300-EADA0BB9AFF3}';
     private const SERVER_SOCKET_MODULE_GUID = '{8062CF2B-600E-41D6-AD4B-1BA66C32D6ED}';
     private const MEDIA_HELPER_MODULE_GUID = '{0D50907C-F261-4354-A8E3-0D8D12F48D4C}';
 
@@ -625,44 +627,52 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $variableID = (int) ($item['id'] ?? 0);
+        $instanceID = (int) ($item['instanceID'] ?? 0);
         $target = (bool) ($item['target'] ?? false);
+        $mode = (string) ($item['mode'] ?? 'panic-on');
         $sessionID = (string) ($item['sessionID'] ?? '');
         $reason = (string) ($item['reason'] ?? 'panic');
 
-        // EIN-Befehle einer inzwischen quittierten/abgelaufenen Session duerfen
-        // nicht nachlaufen. Ein alter AUS-Worker darf umgekehrt niemals eine
-        // eventuell bereits neue aktive Alarm-Session dunkel schalten.
-        if ($target) {
+        if ($mode === 'panic-on') {
+            // Kein verspätetes PANIK EIN nach Quittierung oder Alarmende.
             if ($sessionID === '' || !$this->IsActiveSession($sessionID)) {
                 $this->SetBuffer('PanicQueue', '[]');
                 return;
             }
-        } elseif ($this->HasAnyActiveSession()) {
+        } elseif ($mode === 'restore') {
+            // Eine alte Wiederherstellung darf niemals in eine bereits neue aktive
+            // Alarm-Session hineinlaufen.
+            if ($this->HasAnyActiveSession()) {
+                $this->SetBuffer('PanicQueue', '[]');
+                return;
+            }
+        } else {
             $this->SetBuffer('PanicQueue', '[]');
             return;
         }
 
-        if ($variableID > 0 && IPS_VariableExists($variableID)) {
+        if ($variableID > 0 && $instanceID > 0 && IPS_VariableExists($variableID) && IPS_InstanceExists($instanceID)) {
             try {
-                $variable = IPS_GetVariable($variableID);
-                if ((int) $variable['VariableType'] !== VARIABLETYPE_BOOLEAN) {
-                    throw new Exception('Zielvariable ist nicht Boolean');
-                }
-                if (!HasAction($variableID)) {
-                    throw new Exception('Zielvariable besitzt keine Aktion');
+                $instance = IPS_GetInstance($instanceID);
+                if (strtoupper((string) ($instance['ModuleInfo']['ModuleID'] ?? '')) !== strtoupper(self::LCN_LIGHT_MODULE_GUID)) {
+                    throw new Exception('Zielinstanz ist keine LCNLight-Instanz');
                 }
 
-                $current = (bool) GetValue($variableID);
+                $current = $this->ReadLCNLightState($instanceID, $variableID);
+                if ($current === null) {
+                    throw new Exception('LCN-Light-Istzustand unbekannt; kein blinder Toggle');
+                }
+
                 if ($current !== $target) {
-                    $ok = RequestActionEx($variableID, $target, 'LCN Alarmanlage');
+                    $ok = (bool) LCL_SetPower($instanceID, $target);
                     if (!$ok) {
-                        throw new Exception('RequestActionEx meldete FALSE');
+                        throw new Exception('LCL_SetPower meldete FALSE');
                     }
                 }
             } catch (Throwable $e) {
                 IPS_LogMessage(
                     'LCN Alarmanlage #' . $this->InstanceID,
-                    'Paniklicht #' . $variableID . ' ' . ($target ? 'EIN' : 'AUS') .
+                    'Licht #' . $variableID . ' -> ' . ($target ? 'EIN' : 'AUS') .
                     ' fehlgeschlagen (' . $reason . '): ' . $e->getMessage()
                 );
                 $this->SendDebug('Panic', 'Variable #' . $variableID . ': ' . $e->getMessage(), 0);
@@ -966,6 +976,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         // aktualisieren, aber niemals einen historischen Alarm erzeugen.
         $this->SetBuffer('RuntimeReady', '0');
         $this->SetBuffer('PanicQueue', '[]');
+        $this->SetBuffer('PanicLightMap', '{}');
         $this->SetBuffer('NotificationQueue', '[]');
         $this->SetBuffer('TVConfig', '{}');
 
@@ -984,7 +995,12 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->UnregisterOldPanicReference();
 
         [$sensorMap, $errors] = $this->BuildSensorMap();
-        [$acknowledgeMap, $acknowledgeErrors] = $this->BuildAcknowledgeMap($sensorMap);
+        // Die bisherige Property AcknowledgeLights bleibt aus Update-/Rollback-Gründen
+        // unverändert erhalten, beschreibt ab 0.1.14 aber ausschließlich die Lichter,
+        // die bei Alarm als Panikbeleuchtung eingeschaltet werden. Quittieren darf jede
+        // installierte LCNLight-Instanz; diese Liste wird automatisch ermittelt.
+        [$panicLightMap, $panicLightErrors] = $this->BuildPanicLightMap($sensorMap);
+        $acknowledgeMap = $this->BuildAllLCNLightMap($sensorMap, $panicLightMap);
         [$panicVariableID, $panicErrors] = $this->BuildPanicConfig();
         [$notificationConfig, $notificationWarnings] = $this->BuildNotificationConfig();
         [$tvConfig, $tvWarnings] = $this->BuildTVConfig();
@@ -1001,9 +1017,10 @@ class LCNAlarmanlage extends IPSModuleStrict
                 $tvConfig['mediaPortActive'] = (int) ($media['port'] ?? $this->ReadAttributeInteger('MediaServerPortActive'));
             }
         }
-        $errors = array_merge($errors, $acknowledgeErrors, $panicErrors);
+        $errors = array_merge($errors, $panicLightErrors, $panicErrors);
 
         $this->SetBuffer('SensorMap', $this->Encode($sensorMap));
+        $this->SetBuffer('PanicLightMap', $this->Encode($panicLightMap));
         $this->SetBuffer('AcknowledgeMap', $this->Encode($acknowledgeMap));
         $this->SetBuffer('PanicGroupVariableID', (string) $panicVariableID);
         $this->SetBuffer('NotificationConfig', $this->Encode($notificationConfig));
@@ -1179,6 +1196,14 @@ class LCNAlarmanlage extends IPSModuleStrict
             if ($sessionID !== '') {
                 $this->SetPanicForSession($sessionID, true, 'restart');
                 $this->StartTVForAlarm($sessionID);
+            }
+        } elseif ($sessionState === self::SESSION_REARM_WAIT) {
+            // Falls Symcon während einer Quittierung/Restaurierung neu gestartet wurde,
+            // wird der vor Alarm gespeicherte Lichtzustand erneut deterministisch
+            // angefordert. Dadurch bleibt kein Paniklicht nach einem Neustart hängen.
+            $sessionID = (string) ($session['id'] ?? '');
+            if ($sessionID !== '') {
+                $this->SetPanicForSession($sessionID, false, 'restart-rearm-wait');
             }
         }
 
@@ -1388,16 +1413,30 @@ class LCNAlarmanlage extends IPSModuleStrict
                 return;
             }
 
-            // PANIK EIN erzeugt ausschließlich AUS->EIN. Quittiert wird bewusst nur
-            // eine echte EIN->AUS-Flanke während einer AKTIVEN Alarm-Session. Beim
-            // späteren PANIK AUS ist die Session bereits rearm_wait und kann sich
-            // deshalb nicht selbst quittieren.
-            if ($oldValue && !$newValue) {
-                $session = $this->ReadSession('CurrentSession');
-                if (($session['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE) {
-                    $shouldAcknowledge = true;
-                    $source = 'LCN-Licht: ' . $this->AcknowledgeLightName($VariableID);
-                }
+            $session = $this->ReadSession('CurrentSession');
+            if (($session['state'] ?? self::SESSION_NONE) !== self::SESSION_ACTIVE) {
+                return;
+            }
+
+            $panicMap = $this->ReadPanicLightMap();
+            $isPanicLight = isset($panicMap[$key]);
+
+            if ($isPanicLight) {
+                // Paniklichter werden beim Alarm automatisch nur AUS -> EIN geschaltet.
+                // Diese Flanke darf den Alarm niemals selbst quittieren. Ein echter
+                // Tastendruck auf ein während des Alarms leuchtendes Paniklicht erzeugt
+                // dagegen EIN -> AUS und quittiert sicher.
+                $shouldAcknowledge = $oldValue && !$newValue;
+            } else {
+                // Alle übrigen LCNLight-Instanzen werden vom Alarm nicht automatisch
+                // geschaltet. Deshalb ist jede echte Zustandsänderung während einer
+                // aktiven Alarm-Session ein zulässiger Quittierungsweg. Damit kann z. B.
+                // OG Schlafen 1 unabhängig von der Paniklichtgruppe quittieren.
+                $shouldAcknowledge = true;
+            }
+
+            if ($shouldAcknowledge) {
+                $source = 'LCN-Licht: ' . $this->AcknowledgeLightName($VariableID);
             }
         } finally {
             IPS_SemaphoreLeave($this->EngineSemaphoreName());
@@ -1410,52 +1449,115 @@ class LCNAlarmanlage extends IPSModuleStrict
 
     private function SetPanicForSession(string $SessionID, bool $On, string $Reason): void
     {
-        // Die sichtbare Integer-Statusvariable der LCNLightGroup ist absichtlich
-        // read-only und besitzt keine VariableAction. Geschaltet werden deshalb
-        // die explizit konfigurierten LCNLight-Statusvariablen. Damit bilden wir
-        // die Gruppenregel deterministisch nach: nur abweichende Leuchten erhalten
-        // einen Befehl, und zwischen zwei Befehlen liegen 100 ms.
-        $map = $this->ReadAcknowledgeMap();
-        if ($map === []) {
+        if (!$On) {
+            // AUS bedeutet ab 0.1.14 nicht mehr "alle Paniklichter AUS", sondern:
+            // exakt den vor Alarm gespeicherten Zustand ALLER LCN-Lichter herstellen.
+            // Dadurch bleiben zuvor eingeschaltete Lichter eingeschaltet und auch der
+            // zur Quittierung betätigte GT8 wird auf seinen Ursprungszustand zurückgesetzt.
+            $this->RestoreLightsForSession($SessionID, $Reason);
             return;
         }
 
-        if ($On && !$this->IsActiveSession($SessionID)) {
+        if (!$this->IsActiveSession($SessionID)) {
+            return;
+        }
+
+        $panicMap = $this->ReadPanicLightMap();
+        if ($panicMap === []) {
+            return;
+        }
+
+        $snapshot = $this->ReadLightSnapshotForSession($SessionID);
+        if ($snapshot === []) {
+            $this->SendDebug('Panic', 'Kein Licht-Snapshot für Session ' . $SessionID . ' vorhanden; keine blinden Toggle-Befehle.', 0);
             return;
         }
 
         $queue = [];
-        foreach ($map as $light) {
+        foreach ($panicMap as $key => $light) {
+            if (!isset($snapshot[(string) $key]) || !array_key_exists('state', $snapshot[(string) $key])) {
+                continue;
+            }
+
+            // Nur Lichter, die VOR dem Alarm sicher AUS waren, dürfen vom Alarm
+            // eingeschaltet werden. Vorher bereits eingeschaltete Lichter erhalten
+            // überhaupt keinen Befehl und können daher nicht versehentlich toggeln.
+            $original = (bool) $snapshot[(string) $key]['state'];
+            if ($original) {
+                continue;
+            }
+
+            $instanceID = (int) ($light['instanceID'] ?? 0);
             $variableID = (int) ($light['id'] ?? 0);
-            if ($variableID <= 0 || !IPS_VariableExists($variableID)) {
-                continue;
-            }
-
-            try {
-                $current = (bool) GetValue($variableID);
-            } catch (Throwable $e) {
-                continue;
-            }
-
-            if ($current === $On) {
+            $current = $this->ReadLCNLightState($instanceID, $variableID);
+            if ($current !== false) {
+                // TRUE = bereits EIN; NULL = unbekannt -> niemals blind toggeln.
                 continue;
             }
 
             $queue[] = [
                 'id' => $variableID,
-                'target' => $On,
+                'instanceID' => $instanceID,
+                'target' => true,
+                'mode' => 'panic-on',
                 'sessionID' => $SessionID,
                 'reason' => $Reason
             ];
         }
 
-        // Jeder neue definierte Panikzustand ersetzt einen eventuell noch laufenden
-        // alten Auftrag. So kann insbesondere eine Quittierung eine noch laufende
-        // EIN-Serie sofort in eine AUS-Serie umwandeln.
+        $this->QueueLightCommands($queue);
+    }
+
+    private function RestoreLightsForSession(string $SessionID, string $Reason): void
+    {
+        if ($SessionID === '') {
+            return;
+        }
+
+        $snapshot = $this->ReadLightSnapshotForSession($SessionID);
+        if ($snapshot === []) {
+            return;
+        }
+
+        $queue = [];
+        foreach ($snapshot as $light) {
+            if (!is_array($light) || !array_key_exists('state', $light)) {
+                continue;
+            }
+
+            $instanceID = (int) ($light['instanceID'] ?? 0);
+            $variableID = (int) ($light['id'] ?? 0);
+            if ($instanceID <= 0 || $variableID <= 0) {
+                continue;
+            }
+
+            $target = (bool) $light['state'];
+            $current = $this->ReadLCNLightState($instanceID, $variableID);
+            if ($current === null || $current === $target) {
+                continue;
+            }
+
+            $queue[] = [
+                'id' => $variableID,
+                'instanceID' => $instanceID,
+                'target' => $target,
+                'mode' => 'restore',
+                'sessionID' => $SessionID,
+                'reason' => $Reason
+            ];
+        }
+
+        $this->QueueLightCommands($queue);
+    }
+
+    private function QueueLightCommands(array $Queue): void
+    {
+        // Ein neuer definierter Zustand ersetzt einen eventuell noch laufenden alten
+        // Auftrag. Quittierung kann damit eine noch laufende PANIK-EIN-Serie sofort
+        // in die Wiederherstellung des Ursprungszustands umwandeln.
         $this->SetTimerInterval('PanicQueue', 0);
-        $this->SetBuffer('PanicQueue', $this->Encode($queue));
-        if ($queue !== []) {
-            // Erstes Licht sofort, weitere mit 100 ms Abstand.
+        $this->SetBuffer('PanicQueue', $this->Encode(array_values($Queue)));
+        if ($Queue !== []) {
             $this->PanicQueue();
         }
     }
@@ -1765,6 +1867,10 @@ class LCNAlarmanlage extends IPSModuleStrict
             'endReason' => '',
             'firstSensorID' => $VariableID,
             'firstSensorName' => $sensorName,
+            // Exakter Licht-Istzustand unmittelbar VOR jeder Alarmaktion. Nur sicher
+            // bekannte LCNLight-Zustände werden gespeichert; unbekannte Zustände werden
+            // weder beim Panik-EIN noch bei der Wiederherstellung blind getoggelt.
+            'lightSnapshot' => $this->CaptureLCNLightSnapshot(),
             'notifications' => [],
             'events' => [
                 [
@@ -3025,11 +3131,11 @@ class LCNAlarmanlage extends IPSModuleStrict
         return [$map, $errors];
     }
 
-    private function BuildAcknowledgeMap(array $SensorMap): array
+    private function BuildPanicLightMap(array $SensorMap): array
     {
         $decoded = json_decode($this->ReadPropertyString('AcknowledgeLights'), true);
         if (!is_array($decoded)) {
-            return [[], ['Quittier-Lichterliste ist ungültig']];
+            return [[], ['Panik-Lichterliste ist ungültig']];
         }
 
         $map = [];
@@ -3041,7 +3147,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
             $variableID = (int) ($row['VariableID'] ?? 0);
             if ($variableID <= 0 || !IPS_VariableExists($variableID)) {
-                $errors[] = 'Quittier-Licht Zeile ' . ($index + 1) . ': Variable fehlt';
+                $errors[] = 'Panik-Licht Zeile ' . ($index + 1) . ': Variable fehlt';
                 continue;
             }
 
@@ -3050,32 +3156,97 @@ class LCNAlarmanlage extends IPSModuleStrict
                 $errors[] = 'Panik-Licht Zeile ' . ($index + 1) . ': keine Boolean-Variable';
                 continue;
             }
-            if (!HasAction($variableID)) {
-                $errors[] = 'Panik-Licht Zeile ' . ($index + 1) . ': Statusvariable besitzt keine nutzbare Aktion';
+
+            $object = IPS_GetObject($variableID);
+            $instanceID = (int) ($object['ParentID'] ?? 0);
+            if ($instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+                $errors[] = 'Panik-Licht Zeile ' . ($index + 1) . ': Status gehört zu keiner Instanz';
+                continue;
+            }
+            $instance = IPS_GetInstance($instanceID);
+            if (strtoupper((string) ($instance['ModuleInfo']['ModuleID'] ?? '')) !== strtoupper(self::LCN_LIGHT_MODULE_GUID)) {
+                $errors[] = 'Panik-Licht Zeile ' . ($index + 1) . ': Variable ist kein LCN Licht -> Status';
+                continue;
+            }
+
+            $ident = (string) (IPS_GetObject($variableID)['ObjectIdent'] ?? '');
+            if (strcasecmp($ident, 'Status') !== 0) {
+                $errors[] = 'Panik-Licht Zeile ' . ($index + 1) . ': Variable ist nicht der Status der LCN-Lichtinstanz';
                 continue;
             }
 
             if (isset($SensorMap[(string) $variableID])) {
-                $errors[] = 'Variable #' . $variableID . ' darf nicht zugleich GUS und Quittier-Licht sein';
+                $errors[] = 'Variable #' . $variableID . ' darf nicht zugleich GUS und Panik-Licht sein';
                 continue;
             }
             if (isset($map[(string) $variableID])) {
-                $errors[] = 'Quittier-Licht Variable #' . $variableID . ' ist doppelt eingetragen';
+                $errors[] = 'Panik-Licht Variable #' . $variableID . ' ist doppelt eingetragen';
                 continue;
             }
 
             $name = trim((string) ($row['Name'] ?? ''));
             if ($name === '') {
-                $name = IPS_GetName($variableID);
+                $name = IPS_GetName($instanceID);
             }
 
             $map[(string) $variableID] = [
                 'id' => $variableID,
+                'instanceID' => $instanceID,
                 'name' => $name
             ];
         }
 
         return [$map, $errors];
+    }
+
+    private function BuildAllLCNLightMap(array $SensorMap, array $PanicLightMap): array
+    {
+        $map = [];
+
+        try {
+            $instances = IPS_GetInstanceListByModuleID(self::LCN_LIGHT_MODULE_GUID);
+        } catch (Throwable $e) {
+            $this->SendDebug('LCNLightDiscovery', 'LCNLight-Instanzen konnten nicht ermittelt werden: ' . $e->getMessage(), 0);
+            $instances = [];
+        }
+
+        foreach ($instances as $instanceID) {
+            $instanceID = (int) $instanceID;
+            if ($instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+                continue;
+            }
+
+            $variableID = @IPS_GetObjectIDByIdent('Status', $instanceID);
+            if ($variableID === false || $variableID <= 0 || !IPS_VariableExists((int) $variableID)) {
+                continue;
+            }
+            $variableID = (int) $variableID;
+            $variable = IPS_GetVariable($variableID);
+            if ((int) ($variable['VariableType'] ?? -1) !== VARIABLETYPE_BOOLEAN) {
+                continue;
+            }
+            if (isset($SensorMap[(string) $variableID])) {
+                continue;
+            }
+
+            $map[(string) $variableID] = [
+                'id' => $variableID,
+                'instanceID' => $instanceID,
+                'name' => IPS_GetName($instanceID),
+                'panic' => isset($PanicLightMap[(string) $variableID])
+            ];
+        }
+
+        // Explizit konfigurierte Paniklichter bleiben auch dann registriert, falls
+        // Symcon die Instanzliste während ApplyChanges kurzzeitig unvollständig liefert.
+        foreach ($PanicLightMap as $key => $light) {
+            if (!isset($map[(string) $key])) {
+                $light['panic'] = true;
+                $map[(string) $key] = $light;
+            }
+        }
+
+        return $map;
     }
 
     private function BuildPanicConfig(): array
@@ -3153,6 +3324,72 @@ class LCNAlarmanlage extends IPSModuleStrict
     {
         $decoded = json_decode($this->GetBuffer('SensorMap'), true);
         return is_array($decoded) ? $decoded : [];
+    }
+
+    private function ReadPanicLightMap(): array
+    {
+        $decoded = json_decode($this->GetBuffer('PanicLightMap'), true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function CaptureLCNLightSnapshot(): array
+    {
+        $snapshot = [];
+        foreach ($this->ReadAcknowledgeMap() as $key => $light) {
+            $instanceID = (int) ($light['instanceID'] ?? 0);
+            $variableID = (int) ($light['id'] ?? 0);
+            $state = $this->ReadLCNLightState($instanceID, $variableID);
+            if ($state === null) {
+                $this->SendDebug('LightSnapshot', 'Licht #' . $variableID . ' hat unbekannten Istzustand und wird nicht automatisch verändert.', 0);
+                continue;
+            }
+
+            $snapshot[(string) $key] = [
+                'id' => $variableID,
+                'instanceID' => $instanceID,
+                'name' => (string) ($light['name'] ?? IPS_GetName($instanceID)),
+                'state' => $state
+            ];
+        }
+        return $snapshot;
+    }
+
+    private function ReadLightSnapshotForSession(string $SessionID): array
+    {
+        if ($SessionID === '') {
+            return [];
+        }
+
+        foreach (['CurrentSession', 'LastSession'] as $attribute) {
+            $session = $this->ReadSession($attribute);
+            if ((string) ($session['id'] ?? '') !== $SessionID) {
+                continue;
+            }
+            $snapshot = $session['lightSnapshot'] ?? [];
+            return is_array($snapshot) ? $snapshot : [];
+        }
+        return [];
+    }
+
+    private function ReadLCNLightState(int $InstanceID, int $VariableID): ?bool
+    {
+        if ($InstanceID <= 0 || !IPS_InstanceExists($InstanceID)) {
+            return null;
+        }
+        if ($VariableID <= 0 || !IPS_VariableExists($VariableID)) {
+            return null;
+        }
+
+        try {
+            $state = (int) LCL_GetPowerState($InstanceID);
+            if ($state < 0) {
+                return null;
+            }
+            return $state === 1;
+        } catch (Throwable $e) {
+            $this->SendDebug('LCNLightState', 'Instanz #' . $InstanceID . ': ' . $e->getMessage(), 0);
+            return null;
+        }
     }
 
     private function ReadAcknowledgeMap(): array

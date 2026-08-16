@@ -1,10 +1,10 @@
 # LCN Alarmanlage für IP-Symcon 9
 
-## Version 0.1.12
+## Version 0.1.14
 
-Version 0.1.12 baut direkt auf der stabilen Alarmanlage 0.1.11 auf. Der Alarmkern wurde nicht umgebaut. Neu ist ausschließlich der vollständig getestete Samsung-Alarmvideo-Pfad aus `Samsung Alarmvideo Test 0.2.6`, einschließlich internem DLNA-Medienserver, Wake-on-LAN, Videostart, Endlosschleife und Video-Stopp.
+Version 0.1.14 baut direkt auf 0.1.13 auf. Der bereits erfolgreich getestete Alarmkern sowie Samsung-WOL, Alarmvideo, Endlosschleife und Video-Stopp wurden nicht verändert. Geändert wurden ausschließlich die Lichtlogik und der obere Abstand der Visualisierung.
 
-Die bisherigen Testmodule `Samsung Alarmvideo Test` und `Samsung Alarmvideo MediaServer` werden für den Betrieb der Alarmanlage nicht mehr benötigt. Die Alarmanlage enthält eine eigene interne, versteckte MediaServer-Hilfsinstanz und die beiden getesteten Videodateien. Für die sichere Migration sollten die Testmodule jedoch erst nach einem erfolgreichen Live-Gesamttest der 0.1.12 gelöscht werden; siehe `docs/TESTPLAN-0.1.12.md`.
+LCN Light Control **0.6.1** wird über die feste Modul-GUID von `LCNLight` erkannt. Vor jeder Alarmaktion speichert die Alarmanlage den sicher bekannten EIN/AUS-Zustand aller LCN-Lichtinstanzen. Nur ausgewählte Paniklichter, die zu diesem Zeitpunkt AUS sind, werden eingeschaltet. Bei Quittierung, automatischem Alarmende oder vollständigem Ausschalten wird der gespeicherte Vor-Alarm-Zustand aller bekannten LCN-Lichter wiederhergestellt.
 
 ### Unveränderte Visualisierung aus 0.1.11
 
@@ -34,9 +34,11 @@ Für jeden in der Modulkonfiguration aktiv eingetragenen GUS wird dynamisch eine
 
 ### Paniklicht und Quittierung
 
-Die sichtbare Integer-Statusvariable der vorhandenen `LCNLightGroup` ist nur eine optionale Kontrollreferenz. Geschaltet werden die explizit konfigurierten Boolean-Statusvariablen der Gruppenmitglieder. Nur abweichende Leuchten erhalten über ihre normale Symcon-Aktion einen Befehl; zwischen notwendigen Befehlen liegen 100 ms.
+Die sichtbare Integer-Statusvariable der vorhandenen `LCNLightGroup` bleibt nur eine optionale Kontrollreferenz. Die weiterhin gespeicherte Property `AcknowledgeLights` definiert ab 0.1.14 ausschließlich, **welche LCN-Lichter bei Alarm als Paniklicht eingeschaltet werden dürfen**.
 
-Eine echte Statusflanke `EIN -> AUS` eines freigegebenen Paniklichts während einer aktiven Alarm-Session quittiert den aktuellen Alarm. Die Alarmanlage selbst bleibt EIN. Nach freien Bewegungsmeldern läuft `Wieder scharf in …`; danach ist die Anlage wieder scharf.
+Vor dem ersten Panik-/TV-/Benachrichtigungsbefehl wird der Zustand aller installierten `LCNLight`-Instanzen gespeichert. Panik-EIN gilt nur für Lichter, die im Snapshot sicher AUS waren. Ein vorher bereits eingeschaltetes Licht erhält keinen Schaltbefehl. Geschaltet wird über die definierte `LCL_SetPower()`-Schnittstelle von LCN Light Control 0.6.1; unbekannte Zustände werden nicht blind getoggelt. Zwischen notwendigen Befehlen liegen 100 ms.
+
+Zur Quittierung werden automatisch **alle** installierten `LCNLight`-Instanzen registriert, also auch Lichter außerhalb der Panikgruppe (z. B. OG Schlafen 1). Bei einem Nicht-Paniklicht quittiert jede echte Statusänderung während der aktiven Alarm-Session. Bei einem Paniklicht quittiert `EIN -> AUS`, damit das automatische Panik-EIN (`AUS -> EIN`) den Alarm nicht selbst beendet. Danach wird der gespeicherte Zustand aller LCN-Lichter wiederhergestellt: vorher AUS -> wieder AUS, vorher EIN -> wieder EIN. Die Alarmanlage selbst bleibt EIN und geht anschließend in den bekannten Wieder-scharf-Ablauf.
 
 ### Push und E-Mail
 

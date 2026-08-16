@@ -1,3 +1,16 @@
+## 0.1.14
+
+- basiert direkt auf 0.1.13; Samsung-WOL/Video- und Alarmkern bleiben unverändert
+- Visualisierung oben um zusätzlichen Abstand ergänzt, damit die erste Zeile nicht mehr mit der Kachelüberschrift überlappt
+- Property `AcknowledgeLights` bleibt aus Rollback-/Updategründen erhalten, definiert jetzt ausschließlich die Paniklichter
+- alle installierten `LCNLight`-Instanzen aus LCN Light Control 0.6.1 werden automatisch als Quittierungs-Lichtschalter registriert; dadurch ist z. B. OG Schlafen 1 ohne Aufnahme in die Panikgruppe nutzbar
+- vor der ersten Alarmaktion wird der bekannte EIN/AUS-Zustand aller LCN-Lichter in der Alarm-Session gespeichert
+- PANIK EIN schaltet ausschließlich Paniklichter, die vor dem Alarm sicher AUS waren; vorher bereits eingeschaltete Lichter erhalten keinen Befehl
+- Quittierung, automatisches Alarmende und vollständiges Ausschalten stellen den gespeicherten Ursprungszustand aller bekannten LCN-Lichter wieder her
+- damit bleibt ein vor Alarm eingeschaltetes Licht EIN; ein vom Alarm eingeschaltetes Licht geht wieder AUS; ein zur Quittierung betätigter GT8 wird ebenfalls auf seinen Vor-Alarm-Zustand zurückgeführt
+- Lichtbefehle verwenden die definierte `LCL_SetPower()`-/`LCL_GetPowerState()`-Schnittstelle von LCN Light Control 0.6.1; unbekannte Zustände werden niemals blind getoggelt
+- 100-ms-Lichtwarteschlange bleibt ereignis-/auftragsbezogen und erzeugt kein Polling
+
 # Changelog
 
 ## 0.1.12
