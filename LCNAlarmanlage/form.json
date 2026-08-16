@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Version 0.1.16: direkte, rollbackfähige Erweiterung von 0.1.15 mit Rollback-Basis 0.1.14. Alle Alarm-, Licht-, Neustartschutz-, E-Mail-, Samsung-WOL- und Videofunktionen aus 0.1.15 bleiben erhalten. Neu: nochmals mehr Abstand am oberen Rand sowie die aufklappbare Visualisierung „Status Bewegungsmelder“. Dort werden alle konfigurierten GUS und automatisch gefundene native LCN-Bewegungsmelder ohne zusätzliche Symcon-Statusvariablen mit grauem/grünem Istpunkt angezeigt."
+            "label": "Version 0.1.17: direkte, rollbackfähige Visualisierungskorrektur auf Basis 0.1.16; 0.1.14 bleibt die bewährte Rollback-Basis. Der Alarmkern, Lichtzustände, Neustartschutz, E-Mail-Quittierung sowie Samsung-WOL/Video bleiben unverändert. Neu: beim Scrollen schützt ein fester Hintergrundbereich die native Kachelüberschrift; in „Status Bewegungsmelder“ entfällt das Wort „Bewegungsmelder“ aus den Anzeigenamen und rechts steht wie beim Panik-Licht „Bewegung“ bzw. „Ruhe“. Keine zusätzlichen Symcon-Variablen und kein zusätzliches Polling."
         },
         {
             "type": "List",

@@ -1,3 +1,13 @@
+## 0.1.17
+
+- reine, rollbackfähige Visualisierungskorrektur auf Basis 0.1.16; 0.1.14 bleibt die bewährte Rollback-Basis
+- fester, farbschemaabhängiger Hintergrundstreifen unter der nativen Symcon-Kachelüberschrift verhindert beim Scrollen optische Überschneidungen
+- `Status Bewegungsmelder`: sichtbarer Name wird um `Bewegungsmelder` bzw. den vorhandenen Tippfehler `Bewegungsmeder` bereinigt
+- Statusdarstellung analog zur Licht-/Panikliste: Punkt links, Bezeichnung mittig, rechts `Bewegung` oder `Ruhe`
+- grün/türkis = Bewegung, grau = Ruhe
+- keine zusätzlichen Symcon-Variablen, keine neue LCN-Abfrage und kein zusätzliches Polling
+- Alarmkern, GUS-Auswertung, Lichtzustandswiederherstellung, Quittierung, Startschutz, E-Mail, WOL und Video unverändert gegenüber 0.1.16
+
 ## 0.1.16
 
 - direkte, rollbackfähige Erweiterung von 0.1.15; 0.1.14 bleibt die bewährte Rollback-Basis

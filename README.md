@@ -1,5 +1,9 @@
 # LCN Alarmanlage für IP-Symcon 9
 
+## Version 0.1.17
+
+0.1.17 ist eine reine, rollbackfähige Visualisierungskorrektur auf Basis von 0.1.16. Beim Scrollen wird der Bereich unter der nativen Symcon-Kachelüberschrift nun mit einem festen, farbschemaabhängigen Hintergrund geschützt, sodass keine Texte mehr unter die Überschrift laufen. In **Status Bewegungsmelder** wird der Begriff `Bewegungsmelder`/`Bewegungsmeder` aus dem sichtbaren Namen entfernt; rechts steht analog zur Lichtstatusdarstellung `Bewegung` bzw. `Ruhe`. Grauer Punkt = Ruhe, grüner Punkt = Bewegung. Alarmkern, Lichtzustandswiederherstellung, Startschutz, E-Mail-Quittierung, Samsung-WOL/Video, vorhandene Variablen und Polling-Verhalten bleiben unverändert. 0.1.14 bleibt die bewährte Rollback-Basis.
+
 ## Version 0.1.16
 
 0.1.16 enthält vollständig den Stand 0.1.15 und ergänzt ausschließlich die Visualisierung: mehr Abstand oben und die aufklappbare Kategorie **Status Bewegungsmelder**. Die Liste liest vorhandene native GUS-Statuswerte direkt; grün bedeutet aktiv/AN, grau bedeutet frei/AUS. Alle konfigurierten GUS werden gezeigt, zusätzlich werden eindeutig benannte native LCN-Bewegungsmelder automatisch gefunden. Dafür werden keine zusätzlichen sichtbaren Symcon-Variablen erzeugt und es gibt kein zyklisches LCN-Polling. 0.1.14 bleibt die Rollback-Basis.

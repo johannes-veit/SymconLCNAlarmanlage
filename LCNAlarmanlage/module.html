@@ -1,4 +1,4 @@
-<!-- LCN Alarmanlage visualization 0.1.16: more top spacing + motion detector status -->
+<!-- LCN Alarmanlage visualization 0.1.17: protected tile header + compact motion status -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -15,6 +15,20 @@ body {
     font-family: Poppins, "Segoe UI", Arial, sans-serif;
     font-size: 14px;
     line-height: 1.45;
+}
+/* Die native Symcon-Kachelueberschrift liegt ueber dem HTML-Bereich.
+   Dieser feste Hintergrundstreifen verhindert, dass beim Scrollen Inhalt
+   optisch unter die Kachelueberschrift geschoben wird. */
+body::before {
+    content: "";
+    position: fixed;
+    z-index: 1000;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 72px;
+    pointer-events: none;
+    background: Canvas;
 }
 .wrap { display: flex; flex-direction: column; gap: 7px; }
 .row {
@@ -101,15 +115,30 @@ details[open] > summary:before { transform: rotate(90deg); }
 .room-dot.enabled { background: #16b6a7; }
 .sensor-row.motion .sensor-name { font-weight: 500; }
 .motion-status-row {
-    display: flex; align-items: center; min-height: 30px;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
     border-bottom: 1px solid rgba(128,128,128,.12);
 }
 .motion-status-row:last-child { border-bottom: 0; }
 .motion-status-dot {
-    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
-    margin-right: 9px; background: rgba(128,128,128,.48); vertical-align: 1px;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: rgba(127,127,127,.50);
 }
-.motion-status-dot.active { background: #16b66a; box-shadow: 0 0 0 2px rgba(22,182,106,.10); }
+.motion-status-row.active .motion-status-dot { background: #00c7b0; }
+.motion-status-name {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.motion-status-state {
+    opacity: .62;
+    font-size: .92em;
+    white-space: nowrap;
+}
 .protocol-grid { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(0, 1.5fr); gap: 7px 12px; }
 .protocol-grid .pv { text-align: right; overflow-wrap: anywhere; }
 .history-title { margin-top: 12px; margin-bottom: 6px; font-weight: 600; }
@@ -185,6 +214,14 @@ function esc(value) {
     return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 }
 
+function motionDisplayName(value) {
+    return String(value ?? '')
+        .replace(/\bBewegungsmelder\b/gi, '')
+        .replace(/\bBewegungsmeder\b/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
 function remaining(deadline) {
     const d = Number(deadline || 0);
     if (d <= 0) return 0;
@@ -246,10 +283,16 @@ function renderMotionSensors() {
         host.innerHTML = '<div class="muted">Keine Bewegungsmelder gefunden</div>';
         return;
     }
-    host.innerHTML = sensors.map(sensor => `
-        <div class="motion-status-row">
-            <div class="sensor-name"><span class="motion-status-dot ${sensor.active ? 'active' : ''}"></span>${esc(sensor.name)}</div>
-        </div>`).join('');
+    host.innerHTML = sensors.map(sensor => {
+        const active = !!sensor.active;
+        const displayName = motionDisplayName(sensor.name) || `GUS #${Number(sensor.id || 0)}`;
+        return `
+        <div class="motion-status-row ${active ? 'active' : 'idle'}">
+            <span class="motion-status-dot"></span>
+            <span class="motion-status-name">${esc(displayName)}</span>
+            <span class="motion-status-state">${active ? 'Bewegung' : 'Ruhe'}</span>
+        </div>`;
+    }).join('');
 }
 
 function renderHistory() {
