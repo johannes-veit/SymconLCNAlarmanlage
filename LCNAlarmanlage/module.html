@@ -1,4 +1,4 @@
-<!-- LCN Alarmanlage visualization 0.1.21: mobile-safe controls, pending-action guard, stable state cache -->
+<!-- LCN Alarmanlage visualization 0.1.22: mobile-safe controls + WebView-independent manual panel scrolling -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -214,6 +214,7 @@ button, input { touch-action: manipulation; }
 .history-time { opacity: .72; font-size: .9em; margin-top: 2px; }
 .muted { opacity: .65; }
 .loading-row { padding: 5px 0; opacity: .65; }
+.manual-scrollbar { display: none; }
 
 @media (max-width: 520px) {
     .scroll-pane {
@@ -234,26 +235,52 @@ button, input { touch-action: manipulation; }
     .switch-knob { width: 20px; height: 20px; left: 4px; top: 4px; }
     .switch-button.on .switch-knob { transform: translateX(18px); }
 
-    /* Auf dem Smartphone erhaelt JEDE geoeffnete Kategorie ein eigenes,
-       eindeutig scrollbares Fenster. So bleibt der Inhalt innerhalb der
-       WebView erreichbar, selbst wenn die Symcon-App den aeusseren Tile-Scroll
-       abfaengt. */
+    /* Symcon-App-WebViews reichen verschachteltes natives overflow-Scrolling
+       auf einigen Android/iOS-Versionen nicht zuverlaessig weiter. Mobil wird
+       deshalb NICHT mehr der native Scrollmechanismus der WebView benutzt:
+       Der Inhalt wird per Pointer-/Touch-Geste verschoben und die sichtbare
+       Scrollleiste ist ebenfalls eine eigene, direkt bedienbare Leiste. */
     .accordion.open .accordion-panel {
+        position: relative;
         max-height: 46vh;
-        overflow-x: hidden;
-        overflow-y: scroll;
-        -webkit-overflow-scrolling: touch;
-        touch-action: pan-y;
-        overscroll-behavior-y: contain;
-        scrollbar-width: thin;
-        padding-right: 2px;
+        overflow: hidden;
+        touch-action: none;
+        overscroll-behavior: contain;
+        padding-right: 10px;
+        user-select: none;
+        -webkit-user-select: none;
     }
-    .accordion.open .accordion-panel::-webkit-scrollbar { width: 5px; }
-    .accordion.open .accordion-panel::-webkit-scrollbar-thumb {
-        background: rgba(128,128,128,.40);
+    .panel-scroll-content {
+        transform: translate3d(0, 0, 0);
+        will-change: transform;
+    }
+    .manual-scrollbar {
+        display: none;
+        position: absolute;
+        z-index: 20;
+        top: 3px;
+        right: 2px;
+        bottom: 3px;
+        width: 6px;
         border-radius: 4px;
+        background: rgba(128,128,128,.12);
+        touch-action: none;
+        cursor: pointer;
     }
-    /* Protokoll scrollt als eine Einheit; kein drittes verschachteltes
+    .manual-scrollbar.visible { display: block; }
+    .manual-scrollbar-thumb {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 6px;
+        min-height: 28px;
+        border-radius: 4px;
+        background: rgba(128,128,128,.55);
+        touch-action: none;
+        cursor: grab;
+    }
+    .manual-scrollbar-thumb.dragging { background: rgba(128,128,128,.78); cursor: grabbing; }
+    /* Protokoll scrollt als eine Einheit; kein weiteres verschachteltes
        Scrollfenster innerhalb des Kategorienfensters. */
     .history { max-height: none; overflow: visible; }
 }
@@ -288,7 +315,8 @@ button, input { touch-action: manipulation; }
             <span class="accordion-arrow">›</span><span>Überwachte Räume</span>
         </button>
         <div class="accordion-panel" id="roomsPanel">
-            <div id="rooms" class="detail-content"><div class="loading-row">Daten werden geladen …</div></div>
+            <div class="panel-scroll-content"><div id="rooms" class="detail-content"><div class="loading-row">Daten werden geladen …</div></div></div>
+            <div class="manual-scrollbar" aria-hidden="true"><div class="manual-scrollbar-thumb"></div></div>
         </div>
     </section>
 
@@ -297,7 +325,8 @@ button, input { touch-action: manipulation; }
             <span class="accordion-arrow">›</span><span>Status Bewegungsmelder</span>
         </button>
         <div class="accordion-panel" id="motionPanel">
-            <div id="motionSensors" class="detail-content"><div class="loading-row">Daten werden geladen …</div></div>
+            <div class="panel-scroll-content"><div id="motionSensors" class="detail-content"><div class="loading-row">Daten werden geladen …</div></div></div>
+            <div class="manual-scrollbar" aria-hidden="true"><div class="manual-scrollbar-thumb"></div></div>
         </div>
     </section>
 
@@ -306,7 +335,7 @@ button, input { touch-action: manipulation; }
             <span class="accordion-arrow">›</span><span>Protokoll</span>
         </button>
         <div class="accordion-panel" id="protocolPanel">
-            <div class="detail-content">
+            <div class="panel-scroll-content"><div class="detail-content">
                 <div class="protocol-grid">
                     <div>Erstauslöser</div><div id="firstTrigger" class="pv">–</div>
                     <div>Letzte Bewegung</div><div id="lastMovement" class="pv">–</div>
@@ -315,7 +344,8 @@ button, input { touch-action: manipulation; }
                 </div>
                 <div class="history-title">Historie</div>
                 <div id="history" class="history"><div class="history-row muted">Daten werden geladen …</div></div>
-            </div>
+            </div></div>
+            <div class="manual-scrollbar" aria-hidden="true"><div class="manual-scrollbar-thumb"></div></div>
         </div>
     </section>
 </div>
@@ -327,9 +357,9 @@ const KNOWN_KEYS = [
     'firstTrigger', 'lastMovement', 'motionCount', 'lastAlarm',
     'alarmQuietDeadline', 'rearmDeadline', 'sensors', 'motionSensors', 'history'
 ];
-const STATE_CACHE_KEY = 'LCNAlarmanlage.state.v121';
-const UI_CACHE_KEY = 'LCNAlarmanlage.ui.v121';
-const PENDING_CACHE_KEY = 'LCNAlarmanlage.pending.v121';
+const STATE_CACHE_KEY = 'LCNAlarmanlage.state.v122';
+const UI_CACHE_KEY = 'LCNAlarmanlage.ui.v122';
+const PENDING_CACHE_KEY = 'LCNAlarmanlage.pending.v122';
 const STATE_CACHE_MAX_AGE_MS = 20000;
 let state = {};
 let haveValidState = false;
@@ -624,7 +654,7 @@ function renderRooms() {
 
     const host = document.getElementById('rooms');
     const panel = document.getElementById('roomsPanel');
-    const oldScroll = Number(panel?.scrollTop || 0);
+    const oldScroll = getPanelScrollTop(panel);
     const sensors = state.sensors;
     if (!sensors.length) {
         host.innerHTML = '<div class="muted">Keine GUS konfiguriert</div>';
@@ -641,7 +671,7 @@ function renderRooms() {
                 onclick="requestRoomToggle(this)"><span class="switch-knob"></span></button>
         </div>`;
     }).join('');
-    if (panel) requestAnimationFrame(() => { panel.scrollTop = oldScroll; });
+    if (panel) requestAnimationFrame(() => { setPanelScrollTop(panel, oldScroll); refreshPanelScroller(panel); });
 }
 
 function renderMotionSensors() {
@@ -652,7 +682,7 @@ function renderMotionSensors() {
 
     const host = document.getElementById('motionSensors');
     const panel = document.getElementById('motionPanel');
-    const oldScroll = Number(panel?.scrollTop || 0);
+    const oldScroll = getPanelScrollTop(panel);
     const sensors = state.motionSensors;
     if (!sensors.length) {
         host.innerHTML = '<div class="muted">Keine Bewegungsmelder gefunden</div>';
@@ -668,7 +698,7 @@ function renderMotionSensors() {
             <span class="motion-status-state">${active ? 'Bewegung' : 'Ruhe'}</span>
         </div>`;
     }).join('');
-    if (panel) requestAnimationFrame(() => { panel.scrollTop = oldScroll; });
+    if (panel) requestAnimationFrame(() => { setPanelScrollTop(panel, oldScroll); refreshPanelScroller(panel); });
 }
 
 function renderHistory() {
@@ -679,7 +709,7 @@ function renderHistory() {
 
     const host = document.getElementById('history');
     const panel = document.getElementById('protocolPanel');
-    const oldScroll = Number(panel?.scrollTop || 0);
+    const oldScroll = getPanelScrollTop(panel);
     const history = state.history;
     if (!history.length) {
         host.innerHTML = '<div class="history-row muted">Keine Bewegung gespeichert</div>';
@@ -690,7 +720,7 @@ function renderHistory() {
             <div>${esc(item.name)}</div>
             <div class="history-time">${esc(item.time)}</div>
         </div>`).join('');
-    if (panel) requestAnimationFrame(() => { panel.scrollTop = oldScroll; });
+    if (panel) requestAnimationFrame(() => { setPanelScrollTop(panel, oldScroll); refreshPanelScroller(panel); });
 }
 
 function render() {
@@ -698,6 +728,7 @@ function render() {
     renderRooms();
     renderMotionSensors();
     renderHistory();
+    requestAnimationFrame(refreshAllPanelScrollers);
 }
 
 function handleMessage(data) {
@@ -715,7 +746,7 @@ function saveUIState() {
             const panel = el ? el.querySelector('.accordion-panel') : null;
             panels[id] = {
                 open: !!el?.classList.contains('open'),
-                scrollTop: Number(panel?.scrollTop || 0)
+                scrollTop: getPanelScrollTop(panel)
             };
         }
         localStorage.setItem(UI_CACHE_KEY, JSON.stringify({
@@ -740,10 +771,11 @@ function restoreUIState() {
                 el.classList.add('open');
                 button?.setAttribute('aria-expanded', 'true');
             }
-            if (panel) panel.scrollTop = Number(cfg.scrollTop || 0);
+            if (panel) setPanelScrollTop(panel, Number(cfg.scrollTop || 0));
         }
         const pane = document.getElementById('scrollPane');
         if (pane) pane.scrollTop = Number(saved?.scrollTop || 0);
+        requestAnimationFrame(refreshAllPanelScrollers);
     } catch (_) {}
 }
 
@@ -754,6 +786,7 @@ function toggleAccordion(id) {
     el.classList.toggle('open', open);
     const button = el.querySelector('.accordion-toggle');
     button?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    requestAnimationFrame(() => refreshPanelScroller(el.querySelector('.accordion-panel')));
     saveUIState();
 }
 
@@ -780,35 +813,267 @@ for (const id of ['autoFrom', 'autoTo']) {
     input.addEventListener('blur', () => { requestTimeChange(id); renderCore(); });
 }
 document.getElementById('scrollPane').addEventListener('scroll', () => { window.clearTimeout(window.__alarmUISave); window.__alarmUISave = window.setTimeout(saveUIState, 150); }, { passive: true });
-for (const panel of document.querySelectorAll('.accordion-panel')) {
-    panel.addEventListener('scroll', () => { window.clearTimeout(window.__alarmUISave); window.__alarmUISave = window.setTimeout(saveUIState, 150); }, { passive: true });
 
-    /* Fallback fuer Symcon-App-WebViews, die verschachteltes CSS-Scrolling
-       nicht sauber an die innere Flaeche weiterreichen. Nur echte vertikale
-       Wischbewegungen greifen ein; Tippen auf Schalter/Buttons bleibt unberuehrt. */
-    let touchY = null;
-    let dragging = false;
-    panel.addEventListener('touchstart', event => {
-        if (event.touches.length !== 1) return;
-        touchY = event.touches[0].clientY;
-        dragging = false;
-    }, { passive: true });
-    panel.addEventListener('touchmove', event => {
-        if (touchY == null || event.touches.length !== 1) return;
-        const y = event.touches[0].clientY;
-        const delta = touchY - y;
-        if (!dragging && Math.abs(delta) < 6) return;
-        dragging = true;
-        const canScroll = panel.scrollHeight > panel.clientHeight + 1;
-        if (canScroll) {
-            panel.scrollTop += delta;
-            if (event.cancelable) event.preventDefault();
-        }
-        touchY = y;
-    }, { passive: false });
-    panel.addEventListener('touchend', () => { touchY = null; dragging = false; saveUIState(); }, { passive: true });
-    panel.addEventListener('touchcancel', () => { touchY = null; dragging = false; }, { passive: true });
+function mobileManualScrollEnabled() {
+    return window.matchMedia ? window.matchMedia('(max-width: 520px)').matches : (window.innerWidth <= 520);
 }
+
+function panelScrollContent(panel) {
+    return panel ? panel.querySelector('.panel-scroll-content') : null;
+}
+
+function getPanelScrollTop(panel) {
+    if (!panel) return 0;
+    if (!mobileManualScrollEnabled()) return Number(panel.scrollTop || 0);
+    return Math.max(0, Number(panel.dataset.manualScrollTop || 0));
+}
+
+function panelMetrics(panel) {
+    const content = panelScrollContent(panel);
+    if (!panel || !content) return { viewport: 0, contentHeight: 0, max: 0 };
+    const viewport = Math.max(0, Number(panel.clientHeight || 0));
+    const contentHeight = Math.max(0, Number(content.scrollHeight || content.offsetHeight || 0));
+    return { viewport, contentHeight, max: Math.max(0, contentHeight - viewport) };
+}
+
+function setPanelScrollTop(panel, value, persist = false) {
+    if (!panel) return;
+    if (!mobileManualScrollEnabled()) {
+        panel.scrollTop = Math.max(0, Number(value || 0));
+        return;
+    }
+    const requested = Math.max(0, Number(value || 0));
+    const accordion = panel.closest('.accordion');
+    if (accordion && !accordion.classList.contains('open')) {
+        panel.dataset.manualScrollTop = String(requested);
+        panel.querySelector('.manual-scrollbar')?.classList.remove('visible');
+        return;
+    }
+    const content = panelScrollContent(panel);
+    if (!content) return;
+    const metrics = panelMetrics(panel);
+    const top = Math.max(0, Math.min(metrics.max, requested));
+    panel.dataset.manualScrollTop = String(top);
+    content.style.transform = `translate3d(0, ${-top}px, 0)`;
+
+    const bar = panel.querySelector('.manual-scrollbar');
+    const thumb = panel.querySelector('.manual-scrollbar-thumb');
+    if (bar && thumb) {
+        const scrollable = metrics.max > 1 && metrics.viewport > 0;
+        bar.classList.toggle('visible', scrollable);
+        if (scrollable) {
+            const trackHeight = Math.max(0, Number(bar.clientHeight || metrics.viewport));
+            const thumbHeight = Math.max(28, Math.min(trackHeight, trackHeight * (metrics.viewport / metrics.contentHeight)));
+            const travel = Math.max(0, trackHeight - thumbHeight);
+            const thumbTop = metrics.max > 0 ? (top / metrics.max) * travel : 0;
+            thumb.style.height = `${thumbHeight}px`;
+            thumb.style.transform = `translate3d(0, ${thumbTop}px, 0)`;
+        } else {
+            thumb.style.height = '0px';
+            thumb.style.transform = 'translate3d(0, 0, 0)';
+        }
+    }
+    if (persist) saveUIState();
+}
+
+function refreshPanelScroller(panel) {
+    if (!panel) return;
+    if (!mobileManualScrollEnabled()) {
+        const content = panelScrollContent(panel);
+        if (content) content.style.transform = '';
+        panel.querySelector('.manual-scrollbar')?.classList.remove('visible');
+        return;
+    }
+    const accordion = panel.closest('.accordion');
+    if (accordion && !accordion.classList.contains('open')) {
+        panel.querySelector('.manual-scrollbar')?.classList.remove('visible');
+        return;
+    }
+    setPanelScrollTop(panel, getPanelScrollTop(panel));
+}
+
+function refreshAllPanelScrollers() {
+    for (const panel of document.querySelectorAll('.accordion-panel')) refreshPanelScroller(panel);
+}
+
+function installManualPanelScroller(panel) {
+    if (!panel) return;
+    const bar = panel.querySelector('.manual-scrollbar');
+    const thumb = panel.querySelector('.manual-scrollbar-thumb');
+    let activePointer = null;
+    let startY = 0;
+    let startTop = 0;
+    let draggingContent = false;
+    let suppressClickUntil = 0;
+
+    const beginContent = (id, y) => {
+        if (!mobileManualScrollEnabled()) return false;
+        const metrics = panelMetrics(panel);
+        if (metrics.max <= 1) return false;
+        activePointer = id;
+        startY = y;
+        startTop = getPanelScrollTop(panel);
+        draggingContent = false;
+        return true;
+    };
+    const moveContent = (id, y, prevent) => {
+        if (activePointer !== id) return false;
+        const delta = startY - y;
+        if (!draggingContent && Math.abs(delta) < 5) return false;
+        draggingContent = true;
+        setPanelScrollTop(panel, startTop + delta);
+        if (prevent) prevent();
+        return true;
+    };
+    const endContent = id => {
+        if (activePointer !== id) return;
+        if (draggingContent) suppressClickUntil = Date.now() + 350;
+        activePointer = null;
+        draggingContent = false;
+        saveUIState();
+    };
+
+    /* Pointer Events sind der primaere Pfad fuer aktuelle Android-/iOS-WebViews.
+       touch-action:none am Panel verhindert, dass die umgebende Symcon-Kachel
+       die Geste vor diesem Handler uebernimmt. */
+    panel.addEventListener('pointerdown', event => {
+        if (!mobileManualScrollEnabled()) return;
+        if (event.pointerType === 'mouse' && event.button !== 0) return;
+        if (bar && bar.contains(event.target)) return;
+        beginContent(event.pointerId, event.clientY);
+    });
+    panel.addEventListener('pointermove', event => {
+        moveContent(event.pointerId, event.clientY, () => { if (event.cancelable) event.preventDefault(); });
+    }, { passive: false });
+    panel.addEventListener('pointerup', event => endContent(event.pointerId));
+    panel.addEventListener('pointercancel', event => endContent(event.pointerId));
+    panel.addEventListener('click', event => {
+        if (Date.now() < suppressClickUntil) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+    }, true);
+
+    /* Fallback fuer alte WebViews ohne PointerEvent. */
+    if (!window.PointerEvent) {
+        let touchID = null;
+        panel.addEventListener('touchstart', event => {
+            if (!mobileManualScrollEnabled() || event.touches.length !== 1) return;
+            if (bar && bar.contains(event.target)) return;
+            touchID = event.touches[0].identifier;
+            beginContent(`t${touchID}`, event.touches[0].clientY);
+        }, { passive: true });
+        panel.addEventListener('touchmove', event => {
+            if (touchID == null) return;
+            const touch = Array.from(event.touches).find(t => t.identifier === touchID);
+            if (!touch) return;
+            moveContent(`t${touchID}`, touch.clientY, () => { if (event.cancelable) event.preventDefault(); });
+        }, { passive: false });
+        panel.addEventListener('touchend', () => { if (touchID != null) endContent(`t${touchID}`); touchID = null; }, { passive: true });
+        panel.addEventListener('touchcancel', () => { if (touchID != null) endContent(`t${touchID}`); touchID = null; }, { passive: true });
+    }
+
+    if (bar && thumb) {
+        let barPointer = null;
+        let barStartY = 0;
+        let barStartTop = 0;
+
+        const moveBar = (y, prevent) => {
+            const metrics = panelMetrics(panel);
+            if (metrics.max <= 1) return;
+            const trackHeight = Math.max(1, Number(bar.clientHeight || metrics.viewport));
+            const thumbHeight = Math.max(28, Math.min(trackHeight, trackHeight * (metrics.viewport / metrics.contentHeight)));
+            const travel = Math.max(1, trackHeight - thumbHeight);
+            const ratio = metrics.max / travel;
+            setPanelScrollTop(panel, barStartTop + ((y - barStartY) * ratio));
+            if (prevent) prevent();
+        };
+
+        thumb.addEventListener('pointerdown', event => {
+            if (!mobileManualScrollEnabled()) return;
+            event.stopPropagation();
+            if (event.cancelable) event.preventDefault();
+            barPointer = event.pointerId;
+            barStartY = event.clientY;
+            barStartTop = getPanelScrollTop(panel);
+            thumb.classList.add('dragging');
+            try { thumb.setPointerCapture(event.pointerId); } catch (_) {}
+        }, { passive: false });
+        thumb.addEventListener('pointermove', event => {
+            if (barPointer !== event.pointerId) return;
+            moveBar(event.clientY, () => { if (event.cancelable) event.preventDefault(); });
+        }, { passive: false });
+        const endBar = event => {
+            if (barPointer !== event.pointerId) return;
+            barPointer = null;
+            thumb.classList.remove('dragging');
+            saveUIState();
+        };
+        thumb.addEventListener('pointerup', endBar);
+        thumb.addEventListener('pointercancel', endBar);
+        thumb.addEventListener('lostpointercapture', endBar);
+
+        bar.addEventListener('pointerdown', event => {
+            if (!mobileManualScrollEnabled() || event.target === thumb) return;
+            event.stopPropagation();
+            if (event.cancelable) event.preventDefault();
+            const rect = bar.getBoundingClientRect();
+            const metrics = panelMetrics(panel);
+            if (metrics.max <= 1) return;
+            const trackHeight = Math.max(1, rect.height);
+            const thumbHeight = Math.max(28, Math.min(trackHeight, trackHeight * (metrics.viewport / metrics.contentHeight)));
+            const travel = Math.max(1, trackHeight - thumbHeight);
+            const targetThumbTop = Math.max(0, Math.min(travel, event.clientY - rect.top - thumbHeight / 2));
+            setPanelScrollTop(panel, (targetThumbTop / travel) * metrics.max, true);
+        }, { passive: false });
+
+        if (!window.PointerEvent) {
+            let thumbTouchY = null;
+            let thumbTouchTop = 0;
+            thumb.addEventListener('touchstart', event => {
+                if (!mobileManualScrollEnabled() || event.touches.length !== 1) return;
+                event.stopPropagation();
+                if (event.cancelable) event.preventDefault();
+                thumbTouchY = event.touches[0].clientY;
+                thumbTouchTop = getPanelScrollTop(panel);
+                barStartY = thumbTouchY;
+                barStartTop = thumbTouchTop;
+                thumb.classList.add('dragging');
+            }, { passive: false });
+            thumb.addEventListener('touchmove', event => {
+                if (thumbTouchY == null || event.touches.length !== 1) return;
+                moveBar(event.touches[0].clientY, () => { if (event.cancelable) event.preventDefault(); });
+            }, { passive: false });
+            const endThumbTouch = () => { thumbTouchY = null; thumb.classList.remove('dragging'); saveUIState(); };
+            thumb.addEventListener('touchend', endThumbTouch, { passive: true });
+            thumb.addEventListener('touchcancel', endThumbTouch, { passive: true });
+            bar.addEventListener('touchstart', event => {
+                if (!mobileManualScrollEnabled() || event.target === thumb || event.touches.length !== 1) return;
+                event.stopPropagation();
+                if (event.cancelable) event.preventDefault();
+                const rect = bar.getBoundingClientRect();
+                const metrics = panelMetrics(panel);
+                if (metrics.max <= 1) return;
+                const trackHeight = Math.max(1, rect.height);
+                const thumbHeight = Math.max(28, Math.min(trackHeight, trackHeight * (metrics.viewport / metrics.contentHeight)));
+                const travel = Math.max(1, trackHeight - thumbHeight);
+                const targetThumbTop = Math.max(0, Math.min(travel, event.touches[0].clientY - rect.top - thumbHeight / 2));
+                setPanelScrollTop(panel, (targetThumbTop / travel) * metrics.max, true);
+            }, { passive: false });
+        }
+    }
+
+    panel.addEventListener('scroll', () => {
+        if (!mobileManualScrollEnabled()) {
+            window.clearTimeout(window.__alarmUISave);
+            window.__alarmUISave = window.setTimeout(saveUIState, 150);
+        }
+    }, { passive: true });
+}
+
+for (const panel of document.querySelectorAll('.accordion-panel')) installManualPanelScroller(panel);
+window.addEventListener('resize', () => requestAnimationFrame(refreshAllPanelScrollers));
+window.addEventListener('orientationchange', () => setTimeout(refreshAllPanelScrollers, 120));
 window.addEventListener('beforeunload', () => { saveUIState(); saveStateCache(); savePendingCache(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) requestFreshState(); });
 

@@ -1,3 +1,16 @@
+## 0.1.22
+
+- Smartphone-Aufklappbereiche verwenden keinen verschachtelten nativen WebView-Scroll mehr
+- eigener mobiler Scrollmechanismus für Überwachte Räume, Status Bewegungsmelder und Protokoll
+- vertikales Wischen verschiebt den jeweiligen Kategorieninhalt direkt per Pointer-/Touch-Ereignis
+- eigene sichtbare Scrollleiste mit ziehbarem Scrollgriff; Antippen der Leiste springt an die gewünschte Position
+- Scrollgesten lösen keine Raum-/GUS-Schalter aus
+- Scrollposition bleibt beim Auf-/Zuklappen und bei Live-Updates erhalten
+- Fallback für ältere WebViews ohne Pointer Events über Touch Events
+- Desktop-Darstellung bleibt beim bisherigen Verhalten; manueller Mobil-Scroller ist dort deaktiviert
+- `LCNAlarmanlage/module.php`, Alarmkern, Sensorlogik, Quittierung, Lichtzustandswiederherstellung, Neustartschutz, E-Mail, WOL und Video gegenüber 0.1.21 unverändert
+- keine zusätzlichen Symcon-Variablen, Timer, Properties oder LCN-Abfragen
+
 ## 0.1.21
 
 - Smartphone-Schalter vollständig auf eigene touch-stabile Button-Switches umgestellt; keine versteckten nativen Checkboxen mehr

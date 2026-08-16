@@ -1,5 +1,13 @@
 # LCN Alarmanlage für IP-Symcon 9
 
+## Version 0.1.22
+
+0.1.22 korrigiert ausschließlich das Scrollen der drei mobilen Aufklappbereiche. Die Symcon-App-WebView hat die in 0.1.21 sichtbaren nativen `overflow`-Scrollleisten zwar dargestellt, Touch-/Drag-Eingaben aber nicht zuverlässig an die verschachtelten Scrollcontainer weitergereicht. Mobil wird deshalb nicht mehr auf verschachteltes natives WebView-Scrolling vertraut: **Überwachte Räume**, **Status Bewegungsmelder** und **Protokoll** besitzen nun einen WebView-unabhängigen, eigenen Scrollmechanismus. Wischen verschiebt den Inhalt direkt per Pointer-/Touch-Ereignis; die sichtbare Scrollleiste ist ebenfalls eine eigene bedienbare Leiste und kann gezogen bzw. angetippt werden.
+
+Die touch-stabilen Schalter, Pending-Guards, Zeitfelder, Zustands-Cache und feldweisen Visualisierungsupdates aus 0.1.21 bleiben erhalten. Scrollen darf keine Raum-/GUS-Schalter auslösen; nach Live-Updates sowie Auf-/Zuklappen bleibt die Scrollposition erhalten. Desktop verwendet weiterhin die bisherige Darstellung und wird nicht auf den manuellen Mobil-Scroller umgestellt.
+
+`LCNAlarmanlage/module.php`, Alarmkern, GUS-Auswertung, Quittierung, Lichtzustandswiederherstellung, Neustartschutz, E-Mail-Quittierung sowie Samsung-WOL/Alarmvideo bleiben gegenüber 0.1.21 byteidentisch. Es entstehen keine zusätzlichen Symcon-Variablen, Timer, Properties oder LCN-Abfragen.
+
 ## Version 0.1.21
 
 0.1.21 korrigiert ausschließlich die mobile Bedienung der HTML-Kachel. Die bisherigen nativen, unsichtbaren Checkboxen der Schiebeschalter wurden durch eigene touch-stabile Schalter-Buttons ersetzt. Beim Antippen wird der gewünschte Zustand sofort lokal dargestellt und bis zur bestätigten Rückmeldung des Moduls geschützt. Ältere oder parallel eintreffende Visualisierungsnachrichten können den Schalter daher nicht mehr auf den Ausgangswert zurücksetzen. Bleibt eine Bestätigung aus, wird nach spätestens fünf Sekunden auf den echten Modulzustand zurückgefallen und ein rein lesender Refresh angefordert.
