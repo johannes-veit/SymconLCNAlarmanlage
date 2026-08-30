@@ -1,4 +1,12 @@
-# LCN Alarmanlage für IP-Symcon 9
+# LCN Alarmanlage
+
+## Version 0.1.24
+
+0.1.24 korrigiert ausschließlich einen mobilen Kommunikationsfehler über Symcon Connect. Nach einer Bedienung wurde in 0.1.23 unabhängig von der bereits empfangenen Bestätigung nach 900 ms nochmals `RefreshVisualization` per HTML-SDK `requestAction()` gesendet. Dadurch konnte die eigentliche Schaltung bereits erfolgreich ausgeführt sein, während die überflüssige zweite `/api/`-Anfrage zu `ipmagic.de` mit einem Socket-Abbruch endete und die App einen Fehlerdialog zeigte.
+
+Ab 0.1.24 wird nach einer normalen Bedienung **kein zweiter RPC** mehr gestartet. Der Modulzustand kommt wie vorgesehen über `UpdateVisualizationValue()` zurück. Nur der bestehende 5-s-Failsafe fordert einen Zustand neu an, falls wirklich keine Bestätigung angekommen ist.
+
+Die Automatiklogik bleibt unverändert: Ein manuelles AUS bei aktiver Automatik setzt weiterhin den bestehenden manuellen Override; die Automatik selbst bleibt eingeschaltet und übernimmt wieder an der nächsten Zeitgrenze.
 
 ## Version 0.1.23
 
@@ -190,3 +198,8 @@ Die HTML-SDK-Kachel zeigt die kritischen Bedienelemente direkt und fasst Detaili
 - **Historie**: chronologische Bewegungen des aktuellen bzw. letzten Alarms mit Name und Zeitstempel in einem scrollbar begrenzten Bereich.
 
 Die ursprünglichen Modulvariablen werden nicht entfernt und bleiben in der Listen-/Fallbackdarstellung verfügbar.
+
+## Alarm-Lautstärke 0.1.26
+Die Alarm-Lautstärke ist eine vollständig gekapselte Zusatzfunktion. Erst wenn der integrierte Medienserver einen echten Abruf des laufenden Alarmvideos bestätigt, werden 10 normale `KEY_VOLUP`-Clicks im 500-ms-Raster gesendet (ca. 5 Sekunden). Beim Quittieren bzw. vollständigen Alarmende wird zuerst der unveränderte Video-Stopp ausgeführt, anschließend werden 6 `KEY_VOLDOWN`-Clicks im 500-ms-Raster versucht. Nach exakt ca. 3 Sekunden setzt ein separater Fail-safe-Timer den bisherigen TV-Endpfad fort – unabhängig vom Erfolg der Lautstärke-Befehle. War der TV vor dem Alarm bereits eingeschaltet, bleibt auch das bisherige Verhalten erhalten und der TV bleibt nach dem Alarm an.
+
+Es werden keine absoluten Lautstärkewerte gelesen oder gespeichert. Die Funktion verwendet nur den normalen `SamsungTizen_SendKeys(..., 'KEY_VOLUP/KEY_VOLDOWN')`-Click-Pfad. Press/Release und der direkte WebSocket-Test aus 0.1.25 wurden entfernt.

@@ -1,4 +1,4 @@
-<!-- LCN Alarmanlage visualization 0.1.23: mobile-safe controls + dual touch/pointer panel scrolling -->
+<!-- LCN Alarmanlage visualization 0.1.24: mobile-safe controls; no redundant post-action RPC refresh -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -369,7 +369,6 @@ let historySignature = null;
 let lastRefreshRequest = 0;
 const pendingActions = new Map();
 const PENDING_ACTION_TIMEOUT_MS = 5000;
-const PENDING_REFRESH_DELAY_MS = 900;
 
 const CORE_CONTROL_MAP = {
     arm: { stateKey: 'arm', action: 'Arm', type: 'bool' },
@@ -476,7 +475,6 @@ function sendOptimisticAction(key, action, desired, type = 'bool') {
         /* requestAction liefert laut HTML-SDK keinen synchronen Rueckgabewert.
            Die Anzeige bleibt deshalb bis zur bestaetigten Modulmeldung pending. */
     }
-    window.setTimeout(() => requestFreshState(true), PENDING_REFRESH_DELAY_MS);
 }
 
 function requestCoreToggle(controlID) {

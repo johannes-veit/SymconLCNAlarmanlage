@@ -29,6 +29,13 @@ class LCNAlarmanlage extends IPSModuleStrict
     private const STARTUP_SYNC_MAX_ATTEMPTS = 2;
     private const ACK_TOKEN_LIFETIME_SECONDS = 86400;
 
+    // Gekapselte Alarm-Lautstaerke: der Samsung Q90 verarbeitet die normalen
+    // KEY_VOLUP/KEY_VOLDOWN-Clicks zuverlaessig etwa im 500-ms-Raster.
+    // 10 Impulse = ca. 5 s lauter, 6 Impulse = ca. 3 s leiser.
+    private const TV_ALARM_VOLUME_PULSE_MS = 500;
+    private const TV_ALARM_VOLUME_UP_PULSES = 10;
+    private const TV_ALARM_VOLUME_DOWN_PULSES = 6;
+
     // Exakt aus dem real getesteten Samsung Alarmvideo Test 0.2.6 übernommen.
     private const AVT_SERVICE = 'urn:schemas-upnp-org:service:AVTransport:1';
     private const CM_SERVICE = 'urn:schemas-upnp-org:service:ConnectionManager:1';
@@ -110,6 +117,16 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterAttributeBoolean('TVSeenOnDuringAlarm', false);
         $this->RegisterAttributeInteger('TVOffDeadline', 0);
         $this->RegisterAttributeInteger('TVOffFalseChecks', 0);
+
+        // Rein technischer Laufzeitstatus der optionalen Alarm-Lautstaerke.
+        // Keine dieser Angaben beeinflusst Arm/AlarmActive/GUS/Licht/Video.
+        $this->RegisterAttributeString('TVAlarmVolumeDirection', '');
+        $this->RegisterAttributeString('TVAlarmVolumeSessionID', '');
+        $this->RegisterAttributeInteger('TVAlarmVolumePulsesSent', 0);
+        $this->RegisterAttributeInteger('TVAlarmVolumePulsesTotal', 0);
+        $this->RegisterAttributeString('TVAlarmVolumeRaisedSessionID', '');
+        $this->RegisterAttributeString('TVAlarmVolumeFinalizeSessionID', '');
+        $this->RegisterAttributeString('TVAlarmVolumeFinalizeReason', '');
 
         // Persistenter technischer Zustand des integrierten Alarmvideo-Pfads.
         $this->RegisterAttributeInteger('MediaHelperID', 0);
@@ -263,6 +280,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterTimer('TVVideoRetry', 0, 'LCNALARM_TVVideoRetry($_IPS[\'TARGET\']);');
         $this->RegisterTimer('TVVideoLoopGuard', 0, 'LCNALARM_TVVideoLoopGuard($_IPS[\'TARGET\']);');
         $this->RegisterTimer('TVVideoStatsSync', 0, 'LCNALARM_TVVideoStatsSync($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('TVAlarmVolumePulse', 0, 'LCNALARM_TVAlarmVolumePulse($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('TVAlarmVolumeFinalize', 0, 'LCNALARM_TVAlarmVolumeFinalize($_IPS[\'TARGET\']);');
         $this->RegisterTimer('StartupGuard', 0, 'LCNALARM_StartupGuard($_IPS[\'TARGET\']);');
 
         // Sicherer E-Mail-Quittierungsweg. Der GET-Aufruf zeigt ausschließlich eine
@@ -291,6 +310,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('TVOffCheck', 0);
         $this->SetTimerInterval('StartupGuard', 0);
         $this->StopAllTVVideoTimers();
+        $this->ResetTVAlarmVolumeRuntime(true);
 
         if (IPS_GetKernelRunlevel() !== KR_READY) {
             $this->SetValue('Status', 'INITIALISIERUNG');
@@ -1055,6 +1075,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         $bytes = (int) ($stats['bytesSent'] ?? 0);
         if ($count > 0 && $bytes > 0) {
             $this->WriteAttributeBoolean('TVSeenOnDuringAlarm', true);
+            // Erst der echte Medienabruf bestaetigt, dass das Alarmvideo tatsaechlich
+            // laeuft. Genau hier startet die getrennte Lautstaerke-Zusatzfunktion.
+            $this->StartTVAlarmVolumeUpForSession($sessionID);
         }
         if ($count > 0 && $bytes > 0 && $this->ReadAttributeInteger('VideoLoopFallbackPending') === 1) {
             $this->WriteAttributeInteger('VideoLoopFallbackPending', 0);
@@ -2487,6 +2510,11 @@ class LCNAlarmanlage extends IPSModuleStrict
             return;
         }
 
+        // Eine neue Alarm-Session hat immer Vorrang vor einem eventuell noch
+        // laufenden Lautstaerke-Nachlauf der alten Session. Der eigentliche TV-
+        // Ownership-/WOL-/Video-Pfad bleibt davon unberuehrt.
+        $this->ResetTVAlarmVolumeRuntime(true);
+
         // Vor jeder Alarm-Session den bereits bei ApplyChanges vorbereiteten
         // Medienserver nochmals leicht verifizieren. Ein Fehler betrifft nur die
         // optionale TV-Aktion und niemals den Alarmkern/Paniklicht.
@@ -2544,7 +2572,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->StartAlarmVideoForSession($SessionID);
     }
 
-    private function EndTVForAlarm(string $SessionID, string $Reason): void
+    private function EndTVForAlarm(string $SessionID, string $Reason, bool $SkipAlarmVolume = false): void
     {
         $this->SetTimerInterval('TVWakeRetry', 0);
 
@@ -2556,6 +2584,14 @@ class LCNAlarmanlage extends IPSModuleStrict
         // Alarm-Session zuerst Wiedergabe/Endlosschleife stoppen. Das gilt auch,
         // wenn der TV bereits vor dem Alarm eingeschaltet war.
         $this->StopAlarmVideoForSession($SessionID, $Reason, false);
+
+        // Zusatzfunktion: Nur wenn fuer genau diese Session zuvor die
+        // Lautstaerke-Anhebung gestartet wurde, ca. 3 s KEY_VOLDOWN-Clicks
+        // versuchen. Erst danach wird exakt der bisherige EndTVForAlarm-Pfad
+        // fortgesetzt. Fehler der Lautstaerke koennen diesen Pfad nicht abbrechen.
+        if (!$SkipAlarmVolume && $this->StartTVAlarmVolumeDownForSession($SessionID, $Reason)) {
+            return;
+        }
 
         $ownerSessionID = $this->ReadAttributeString('TVOwnerSessionID');
         if ($ownerSessionID !== $SessionID) {
@@ -2631,6 +2667,216 @@ class LCNAlarmanlage extends IPSModuleStrict
             IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Samsung PowerOff fehlgeschlagen: ' . $e->getMessage());
             $this->SendDebug('TV', 'PowerOff fehlgeschlagen: ' . $e->getMessage(), 0);
             return false;
+        }
+    }
+
+    /**
+     * Timer der vollstaendig gekapselten Alarm-Lautstaerke.
+     *
+     * UP:   10 normale KEY_VOLUP-Clicks im 500-ms-Raster (ca. 5 s).
+     * DOWN:  6 normale KEY_VOLDOWN-Clicks im 500-ms-Raster; nach insgesamt
+     *        ca. 3 s wird der unveraenderte TV-Endpfad fortgesetzt.
+     *
+     * Jeder einzelne Samsung-Aufruf ist best-effort. Ein Fehler fuehrt nur zu
+     * einem Debug-Eintrag; der Timer laeuft weiter und bei DOWN wird am Ende
+     * unabhaengig vom Ergebnis EndTVForAlarm(..., true) aufgerufen.
+     */
+    public function TVAlarmVolumePulse(): void
+    {
+        $this->SetTimerInterval('TVAlarmVolumePulse', 0);
+
+        $direction = $this->ReadAttributeString('TVAlarmVolumeDirection');
+        $sessionID = $this->ReadAttributeString('TVAlarmVolumeSessionID');
+        $sent = $this->ReadAttributeInteger('TVAlarmVolumePulsesSent');
+        $total = $this->ReadAttributeInteger('TVAlarmVolumePulsesTotal');
+
+        if (!in_array($direction, ['UP', 'DOWN'], true) || $sessionID === '' || $total <= 0) {
+            // Bei DOWN bleibt der unabhaengige 3-s-Finalizer bestehen und sorgt
+            // trotzdem fuer die Fortsetzung des normalen TV-Endpfads.
+            if ($this->ReadAttributeString('TVAlarmVolumeFinalizeSessionID') === '') {
+                $this->ResetTVAlarmVolumeRuntime(false);
+            }
+            return;
+        }
+
+        // Eine UP-Sequenz darf niemals ueber das Ende ihrer Alarm-Session hinaus
+        // weiterlaufen. DOWN ist dagegen gerade Teil des Alarm-Endes.
+        if ($direction === 'UP' && !$this->IsActiveSession($sessionID)) {
+            $this->ResetTVAlarmVolumeRuntime(false);
+            return;
+        }
+
+        if ($sent >= $total) {
+            $this->WriteAttributeString('TVAlarmVolumeDirection', '');
+            $this->WriteAttributeString('TVAlarmVolumeSessionID', '');
+            $this->WriteAttributeInteger('TVAlarmVolumePulsesSent', 0);
+            $this->WriteAttributeInteger('TVAlarmVolumePulsesTotal', 0);
+            return;
+        }
+
+        $key = $direction === 'UP' ? 'KEY_VOLUP' : 'KEY_VOLDOWN';
+        $this->SendTVAlarmVolumeClick($key, strtolower($direction) . '-pulse-' . ($sent + 1));
+        $sent++;
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesSent', $sent);
+
+        if ($sent < $total) {
+            $this->SetTimerInterval('TVAlarmVolumePulse', self::TV_ALARM_VOLUME_PULSE_MS);
+            return;
+        }
+
+        // Letzter Impuls gesendet: Puls-Timer beenden. Bei DOWN bleibt der separat
+        // gestartete 3-s-Finalizer aktiv und setzt den TV-Endpfad garantiert fort.
+        $this->WriteAttributeString('TVAlarmVolumeDirection', '');
+        $this->WriteAttributeString('TVAlarmVolumeSessionID', '');
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesSent', 0);
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesTotal', 0);
+    }
+
+    /**
+     * Unabhaengiger Fail-safe-Abschluss fuer Alarmende. Dieser Timer wird beim
+     * Start von VOLDOWN sofort auf 3000 ms gesetzt und ist nicht vom Erfolg der
+     * Lautstaerke-Clicks abhaengig. Danach laeuft immer der bisherige TV-Endpfad.
+     */
+    public function TVAlarmVolumeFinalize(): void
+    {
+        $this->SetTimerInterval('TVAlarmVolumeFinalize', 0);
+
+        $finalSessionID = $this->ReadAttributeString('TVAlarmVolumeFinalizeSessionID');
+        $finalReason = $this->ReadAttributeString('TVAlarmVolumeFinalizeReason');
+
+        // Erst den gesamten Zusatzstatus loeschen, dann den bestehenden Endpfad
+        // fortsetzen. So kann keine Lautstaerke-Sequenz rekursiv neu starten.
+        $this->ResetTVAlarmVolumeRuntime(true);
+
+        if ($finalSessionID === '') {
+            return;
+        }
+
+        try {
+            $this->EndTVForAlarm($finalSessionID, $finalReason !== '' ? $finalReason : 'alarm-volume-complete', true);
+        } catch (Throwable $e) {
+            // Zusatzsicherung: Lautstaerke darf niemals in den Alarmkern werfen.
+            $this->SendDebug('TVAlarmVolume', 'Fortsetzung TV-Endpfad fehlgeschlagen: ' . $e->getMessage(), 0);
+        }
+    }
+
+    /** Startet einmalig pro bestaetigt laufender Alarmvideo-Session ca. 5 s VOLUP. */
+    private function StartTVAlarmVolumeUpForSession(string $SessionID): void
+    {
+        if ($SessionID === '' || !$this->IsActiveSession($SessionID)) {
+            return;
+        }
+        if ($this->ReadAttributeString('TVOwnerSessionID') !== $SessionID) {
+            return;
+        }
+        if ($this->ReadAttributeString('TVAlarmVolumeRaisedSessionID') === $SessionID) {
+            return;
+        }
+
+        $config = $this->ReadTVConfig();
+        $instanceID = (int) ($config['instanceID'] ?? 0);
+        if (!(bool) ($config['enabled'] ?? false) || $instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+            return;
+        }
+
+        // Markierung bewusst vor dem ersten Click: Selbst wenn einzelne UP-Clicks
+        // scheitern, darf das Alarmende best-effort VOLDOWN versuchen.
+        $this->SetTimerInterval('TVAlarmVolumePulse', 0);
+        $this->WriteAttributeString('TVAlarmVolumeRaisedSessionID', $SessionID);
+        $this->WriteAttributeString('TVAlarmVolumeDirection', 'UP');
+        $this->WriteAttributeString('TVAlarmVolumeSessionID', $SessionID);
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesSent', 0);
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesTotal', self::TV_ALARM_VOLUME_UP_PULSES);
+        $this->WriteAttributeString('TVAlarmVolumeFinalizeSessionID', '');
+        $this->WriteAttributeString('TVAlarmVolumeFinalizeReason', '');
+        $this->SendDebug('TVAlarmVolume', 'Alarmvideo bestaetigt: starte ca. 5 s KEY_VOLUP-Clicks', 0);
+
+        // Erster Impuls sofort; weitere Impulse laufen nicht-blockierend per Timer.
+        $this->TVAlarmVolumePulse();
+    }
+
+    /**
+     * Startet ca. 3 s VOLDOWN nach Video-Stopp. true bedeutet: EndTVForAlarm muss
+     * jetzt warten; der Timer setzt danach den bisherigen Endpfad automatisch fort.
+     */
+    private function StartTVAlarmVolumeDownForSession(string $SessionID, string $Reason): bool
+    {
+        if ($SessionID === '' || $this->ReadAttributeString('TVAlarmVolumeRaisedSessionID') !== $SessionID) {
+            return false;
+        }
+
+        // Wird EndTVForAlarm waehrend derselben DOWN-Sequenz nochmals aufgerufen,
+        // bleibt der bestehende verzögerte Abschluss bestehen statt doppelt zu laufen.
+        if ($this->ReadAttributeString('TVAlarmVolumeDirection') === 'DOWN'
+            && $this->ReadAttributeString('TVAlarmVolumeSessionID') === $SessionID) {
+            return true;
+        }
+
+        $config = $this->ReadTVConfig();
+        $instanceID = (int) ($config['instanceID'] ?? 0);
+        if (!(bool) ($config['enabled'] ?? false) || $instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+            // Kein gueltiger TV mehr: Zusatzfunktion ueberspringen; der normale
+            // EndTVForAlarm-Pfad muss sofort weiterlaufen.
+            $this->ResetTVAlarmVolumeRuntime(true);
+            return false;
+        }
+
+        // Eine eventuell noch laufende 5-s-UP-Sequenz wird beim Alarmende sofort
+        // beendet und durch die 3-s-DOWN-Sequenz ersetzt.
+        $this->SetTimerInterval('TVAlarmVolumePulse', 0);
+        $this->WriteAttributeString('TVAlarmVolumeDirection', 'DOWN');
+        $this->WriteAttributeString('TVAlarmVolumeSessionID', $SessionID);
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesSent', 0);
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesTotal', self::TV_ALARM_VOLUME_DOWN_PULSES);
+        $this->WriteAttributeString('TVAlarmVolumeFinalizeSessionID', $SessionID);
+        $this->WriteAttributeString('TVAlarmVolumeFinalizeReason', $Reason);
+        $this->SendDebug('TVAlarmVolume', 'Alarmende: starte ca. 3 s KEY_VOLDOWN-Clicks vor bestehendem TV-Endpfad', 0);
+
+        // Fail-safe: Dieser Abschluss laeuft unabhaengig davon, ob irgendein
+        // VOLDOWN-Click erfolgreich ist oder der Puls-Timer vorzeitig endet.
+        $this->SetTimerInterval('TVAlarmVolumeFinalize', 3000);
+        $this->TVAlarmVolumePulse();
+        return true;
+    }
+
+    /** Sendet genau einen normalen SamsungTizen-Click; Fehler bleiben lokal. */
+    private function SendTVAlarmVolumeClick(string $Key, string $Reason): bool
+    {
+        if (!in_array($Key, ['KEY_VOLUP', 'KEY_VOLDOWN'], true)) {
+            return false;
+        }
+
+        $config = $this->ReadTVConfig();
+        $instanceID = (int) ($config['instanceID'] ?? 0);
+        if (!(bool) ($config['enabled'] ?? false) || $instanceID <= 0 || !IPS_InstanceExists($instanceID)) {
+            return false;
+        }
+
+        try {
+            // Absichtlich derselbe bewaehrte normale Click-Pfad des vorhandenen
+            // SamsungTizen-Moduls; kein eigener WebSocket und kein Press/Release.
+            SamsungTizen_SendKeys($instanceID, $Key);
+            $this->SendDebug('TVAlarmVolume', $Key . ' Click gesendet (' . $Reason . ')', 0);
+            return true;
+        } catch (Throwable $e) {
+            $this->SendDebug('TVAlarmVolume', $Key . ' Click fehlgeschlagen (' . $Reason . '): ' . $e->getMessage(), 0);
+            return false;
+        }
+    }
+
+    /** Setzt ausschliesslich den gekapselten Lautstaerke-Laufzeitstatus zurueck. */
+    private function ResetTVAlarmVolumeRuntime(bool $ClearRaisedSession): void
+    {
+        $this->SetTimerInterval('TVAlarmVolumePulse', 0);
+        $this->SetTimerInterval('TVAlarmVolumeFinalize', 0);
+        $this->WriteAttributeString('TVAlarmVolumeDirection', '');
+        $this->WriteAttributeString('TVAlarmVolumeSessionID', '');
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesSent', 0);
+        $this->WriteAttributeInteger('TVAlarmVolumePulsesTotal', 0);
+        $this->WriteAttributeString('TVAlarmVolumeFinalizeSessionID', '');
+        $this->WriteAttributeString('TVAlarmVolumeFinalizeReason', '');
+        if ($ClearRaisedSession) {
+            $this->WriteAttributeString('TVAlarmVolumeRaisedSessionID', '');
         }
     }
 
@@ -3225,6 +3471,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('TVWakeRetry', 0);
         $this->SetTimerInterval('TVOffCheck', 0);
         $this->StopAllTVVideoTimers();
+        $this->ResetTVAlarmVolumeRuntime(true);
         $this->WriteAttributeBoolean('TVOwnedByAlarm', false);
         $this->WriteAttributeString('TVOwnerSessionID', '');
         $this->WriteAttributeInteger('TVWakeAttempts', 0);

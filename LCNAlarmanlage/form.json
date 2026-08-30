@@ -234,6 +234,10 @@
         {
             "type": "Label",
             "label": "Kein Alarm-Polling: Im Normalbetrieb werden GUS und LCN-Licht-Status ausschließlich über spontane VM_UPDATE-Meldungen ausgewertet. Nur beim Kernel-/Modulstart erfolgt zur Fehlalarmvermeidung ein begrenzter einmaliger LCN_RequestStatus-Abgleich je tatsächlichem LCN-Aktormodul (maximal ein Retry). Für Quittierung werden alle LCNLight-Instanzen automatisch registriert; Lichtzustände werden pro Alarm-Session gespeichert und danach wiederhergestellt. Neue Funktionen verwenden Attribute/Buffer/Timer und erzeugen keine zusätzlichen Statusvariablen."
+        },
+        {
+            "type": "Label",
+            "label": "Samsung Alarm-Lautstärke (0.1.26): Sobald der echte Medienabruf des Alarmvideos bestätigt ist, werden gekapselt 10× KEY_VOLUP-Click im 500-ms-Raster gesendet (ca. 5 s). Beim Alarmende wird zuerst das Video gestoppt, danach 6× KEY_VOLDOWN-Click im 500-ms-Raster versucht; ein unabhängiger 3-s-Finalizer setzt anschließend immer den bestehenden TV-Endpfad fort. Keine Press/Release-Steuerung, keine absoluten Lautstärkewerte und keine sichtbaren Zusatzvariablen."
         }
     ]
 }

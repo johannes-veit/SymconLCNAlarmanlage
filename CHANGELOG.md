@@ -1,3 +1,30 @@
+# Changelog
+
+## 0.1.26
+- Samsung-Alarm-Lautstärke als gekapselte Zusatzfunktion integriert; bestehender TV-/Video-/Alarmkern bleibt unverändert bis auf drei eng begrenzte Hook-Aufrufe.
+- Alarmvideo tatsächlich bestätigt: 10 normale `KEY_VOLUP`-Clicks im 500-ms-Raster (ca. 5 s).
+- Alarmende/Quittierung: zuerst bestehender Video-Stopp, danach 6 normale `KEY_VOLDOWN`-Clicks im 500-ms-Raster (ca. 3 s), erst danach Fortsetzung des bisherigen TV-Endpfads.
+- Separater 3-s-Finalizer garantiert die Fortsetzung des TV-Endpfads unabhängig davon, ob einzelne Lautstärke-Clicks fehlschlagen.
+- Press/Release-Test aus 0.1.25 entfernt; kein eigener WebSocket-Pfad mehr für die Alarm-Lautstärke.
+- Keine neuen sichtbaren Symcon-Variablen, keine Lautstärkeabfrage und keine Änderung an WOL, Videoformaten, Loop oder normalem `KEY_POWER`.
+
+## 0.1.25
+
+- Samsung Alarm-Lautstärke als strikt isolierten Hardwaretest ergänzt; noch keine automatische Einbindung in Alarmstart/Alarmende.
+- Zwei Testaktionen im Konfigurationsformular: `KEY_VOLUP Press → 3 s → Release` und `KEY_VOLDOWN Press → 3 s → Release`.
+- Der vorhandene SamsungTizen-Treiber bleibt unverändert; dessen `SendKeys()` sendet weiterhin ausschließlich normale Click-Befehle.
+- Press/Release wird gekapselt direkt über den bereits bestehenden WebSocket-Client der gewählten SamsungTizen-Instanz gesendet. Keine Neuverbindung, keine Änderung der Tizen-Konfiguration.
+- `Release` wird best-effort immer im `finally`-Pfad versucht; sämtliche Fehler werden innerhalb der Zusatzfunktion abgefangen und können den Alarmkern nicht abbrechen.
+- Keine neuen Properties, Attribute, Variablen oder Timer. Bestehender Alarm-, WOL-, Video-, Loop-, Stop-, Power-Off- und normaler Lautstärke-Code bleibt unverändert.
+- Erst nach real bestätigtem Q90-Test wird die Funktion in einer Folgeversion automatisch an Alarmvideo-Start und Alarmende angebunden.
+
+## 0.1.24
+
+- Mobile/Connect: unnötigen zweiten HTML-SDK-`requestAction(RefreshVisualization)` nach jeder Bedienung entfernt.
+- Hintergrund: jede echte Bedienaktion liefert bereits den bestätigten Zustand über `PushVisualizationState()`. Der zusätzliche RPC nach 900 ms erzeugte über Symcon Connect eine zweite `/api/`-Verbindung, obwohl die Aktion bereits erfolgreich ausgeführt war. Bei einem Verbindungsabbruch konnte dadurch trotz korrekt ausgeführter Schaltung ein `ClientException/SocketException`-Dialog erscheinen.
+- Der 5-s-Failsafe bleibt bestehen: Nur wenn eine Bedienung tatsächlich keine Zustandsbestätigung erhält, darf einmal gezielt ein Refresh angefordert werden.
+- Alarmkern, Automatik/ManualOverride, GUS, Lichtlogik, TV/WOL/Video, E-Mail-Quittierung, Timer und MediaServer unverändert.
+
 ## 0.1.23
 
 - Fehler im 0.1.22-Eingabepfad behoben: Touch-Handler werden nicht mehr nur bei vollständig fehlendem `PointerEvent` installiert
