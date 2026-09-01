@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.27
+- Optionales, separat getestetes Modul **Dahua Alarmkameras** integriert; Modul-GUID `{CA5DA1DD-81A8-49B8-B710-FD4427A69ED9}` wird validiert.
+- In der Kachel neue aufklappbare Kategorie **Einstellungen** mit zwei persistenten Schaltern ohne zusätzliche Symcon-Variablen: **Dahua Rot/Blau-Alarmlicht** und **Dahua Sirene**. Beide starten nach dem Update sicherheitshalber AUS.
+- Alarmstart ruft das Dahua-Modul nur bei einer neuen, echten Alarm-Session auf. Alarmlicht/Sirene werden dort intern asynchron verarbeitet; die Kamera-HTTP-Kommunikation blockiert den LCN-Alarmkern nicht.
+- Quittierung, automatisches Alarmende und vollständiges Unscharfschalten beenden Dahua zuerst; dadurch wird insbesondere der 11-s-Sirenentimer vor Licht-/TV-Nachläufen gestoppt.
+- Während eines aktiven Alarms sind beide Dahua-Auswahlschalter server- und UI-seitig gesperrt, damit kein versehentlicher Touch eine Sirene mitten in der Session neu zuschaltet.
+- Neustartschutz: ein normales `ApplyChanges`/Update kann niemals erstmals Dahua-Alarmlicht oder Sirene aktivieren. Nach echtem Kernel-Neustart wird nur eine von 0.1.27 zuvor eindeutig besessene aktive Dahua-Session fortgesetzt. Eine bereits intern beendete `rearm_wait`-Session wird best-effort ausgeschaltet.
+- Die konkrete Dahua-Instanz wird als Referenz registriert; ein Ausfall oder eine fehlende Dahua-Instanz bleibt eine optionale Warnung und schaltet die Alarmanlage nicht unscharf.
+- Bestehende GUIDs, Prefix `LCNALARM`, GUS-/LCN-Lichtlogik, E-Mail, Samsung-WOL/Video/Lautstärke, MediaServer und sichtbare Alarmvariablen bleiben erhalten. Rollback auf 0.1.26 bleibt möglich.
+
 ## 0.1.26
 - Samsung-Alarm-Lautstärke als gekapselte Zusatzfunktion integriert; bestehender TV-/Video-/Alarmkern bleibt unverändert bis auf drei eng begrenzte Hook-Aufrufe.
 - Alarmvideo tatsächlich bestätigt: 10 normale `KEY_VOLUP`-Clicks im 500-ms-Raster (ca. 5 s).

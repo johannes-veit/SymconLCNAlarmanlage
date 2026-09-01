@@ -1,4 +1,4 @@
-<!-- LCN Alarmanlage visualization 0.1.24: mobile-safe controls; no redundant post-action RPC refresh -->
+<!-- LCN Alarmanlage visualization 0.1.27: mobile-safe controls; no redundant post-action RPC refresh -->
 <!DOCTYPE html>
 <html>
 <head>
@@ -106,6 +106,7 @@ button.ack {
 }
 .switch-button.on { background: #16b6a7; }
 .switch-button.pending { opacity: .78; }
+.switch-button:disabled { opacity: .42; cursor: default; }
 .switch-button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 .switch-knob {
     position: absolute;
@@ -163,6 +164,7 @@ button, input { touch-action: manipulation; }
 .accordion-panel { display: none; min-width: 0; }
 .accordion.open .accordion-panel { display: block; }
 .detail-content { padding: 2px 2px 5px 16px; min-width: 0; }
+.settings-note { margin-top: 7px; opacity: .68; font-size: .92em; line-height: 1.35; }
 
 .sensor-row {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -310,6 +312,26 @@ button, input { touch-action: manipulation; }
         <div>Unscharf ab</div><input id="autoTo" type="time" step="60">
     </div>
 
+    <section class="accordion" id="settingsAccordion">
+        <button class="accordion-toggle" type="button" data-accordion="settingsAccordion" aria-expanded="false">
+            <span class="accordion-arrow">›</span><span>Einstellungen</span>
+        </button>
+        <div class="accordion-panel" id="settingsPanel">
+            <div class="panel-scroll-content"><div class="detail-content">
+                <div class="row">
+                    <div class="label">Dahua Rot/Blau-Alarmlicht</div>
+                    <button id="dahuaAlarmLightEnabled" class="switch-button" type="button" role="switch" aria-checked="false" aria-label="Dahua Rot/Blau-Alarmlicht bei Alarm"><span class="switch-knob"></span></button>
+                </div>
+                <div class="row">
+                    <div class="label">Dahua Sirene</div>
+                    <button id="dahuaSirenEnabled" class="switch-button" type="button" role="switch" aria-checked="false" aria-label="Dahua Sirene bei Alarm"><span class="switch-knob"></span></button>
+                </div>
+                <div id="dahuaSettingsStatus" class="settings-note">Dahua-Status wird geladen …</div>
+            </div></div>
+            <div class="manual-scrollbar" aria-hidden="true"><div class="manual-scrollbar-thumb"></div></div>
+        </div>
+    </section>
+
     <section class="accordion" id="roomsAccordion">
         <button class="accordion-toggle" type="button" data-accordion="roomsAccordion" aria-expanded="false">
             <span class="accordion-arrow">›</span><span>Überwachte Räume</span>
@@ -355,11 +377,12 @@ const INITIAL_STATE = __INITIAL_STATE__;
 const KNOWN_KEYS = [
     'arm', 'status', 'automatic', 'autoFrom', 'autoTo', 'alarmActive',
     'firstTrigger', 'lastMovement', 'motionCount', 'lastAlarm',
-    'alarmQuietDeadline', 'rearmDeadline', 'sensors', 'motionSensors', 'history'
+    'alarmQuietDeadline', 'rearmDeadline', 'dahuaAvailable', 'dahuaInstanceName',
+    'dahuaAlarmLightEnabled', 'dahuaSirenEnabled', 'sensors', 'motionSensors', 'history'
 ];
-const STATE_CACHE_KEY = 'LCNAlarmanlage.state.v122';
-const UI_CACHE_KEY = 'LCNAlarmanlage.ui.v122';
-const PENDING_CACHE_KEY = 'LCNAlarmanlage.pending.v122';
+const STATE_CACHE_KEY = 'LCNAlarmanlage.state.v127';
+const UI_CACHE_KEY = 'LCNAlarmanlage.ui.v127';
+const PENDING_CACHE_KEY = 'LCNAlarmanlage.pending.v127';
 const STATE_CACHE_MAX_AGE_MS = 20000;
 let state = {};
 let haveValidState = false;
@@ -374,7 +397,9 @@ const CORE_CONTROL_MAP = {
     arm: { stateKey: 'arm', action: 'Arm', type: 'bool' },
     automatic: { stateKey: 'automatic', action: 'Automatic', type: 'bool' },
     autoFrom: { stateKey: 'autoFrom', action: 'AutoFrom', type: 'text' },
-    autoTo: { stateKey: 'autoTo', action: 'AutoTo', type: 'text' }
+    autoTo: { stateKey: 'autoTo', action: 'AutoTo', type: 'text' },
+    dahuaAlarmLightEnabled: { stateKey: 'dahuaAlarmLightEnabled', action: 'DahuaAlarmLightEnabled', type: 'bool' },
+    dahuaSirenEnabled: { stateKey: 'dahuaSirenEnabled', action: 'DahuaSirenEnabled', type: 'bool' }
 };
 
 function esc(value) {
@@ -626,6 +651,27 @@ function renderCore() {
         if (document.activeElement !== input || resolved.pending) input.value = resolved.value;
         input.classList.toggle('pending-input', resolved.pending);
     }
+    for (const id of ['dahuaAlarmLightEnabled', 'dahuaSirenEnabled']) {
+        const cfg = CORE_CONTROL_MAP[id];
+        const button = document.getElementById(id);
+        if (!button || !hasOwn(state, cfg.stateKey)) continue;
+        const resolved = effectiveValue(id, !!state[cfg.stateKey], 'bool');
+        setSwitchVisual(button, resolved.value, resolved.pending);
+        const locked = !!state.alarmActive || !state.dahuaAvailable;
+        button.disabled = locked;
+        button.setAttribute('aria-disabled', locked ? 'true' : 'false');
+    }
+    const dahuaInfo = document.getElementById('dahuaSettingsStatus');
+    if (dahuaInfo) {
+        if (!state.dahuaAvailable) {
+            dahuaInfo.textContent = 'Dahua-Modul nicht konfiguriert oder nicht verfügbar.';
+        } else if (state.alarmActive) {
+            dahuaInfo.textContent = 'Während eines aktiven Alarms gesperrt. Auswahl gilt unverändert bis zur Quittierung.';
+        } else {
+            const name = String(state.dahuaInstanceName || 'Dahua Alarmkameras');
+            dahuaInfo.textContent = `${name}: bereit. Auswahl gilt ab dem nächsten Alarm.`;
+        }
+    }
     if (hasOwn(state, 'alarmActive')) document.getElementById('alarmBox').classList.toggle('active', !!state.alarmActive);
     if (hasOwn(state, 'firstTrigger')) document.getElementById('firstTrigger').textContent = state.firstTrigger || '–';
     if (hasOwn(state, 'lastMovement')) document.getElementById('lastMovement').textContent = state.lastMovement || '–';
@@ -739,7 +785,7 @@ function handleMessage(data) {
 function saveUIState() {
     try {
         const panels = {};
-        for (const id of ['roomsAccordion', 'motionAccordion', 'protocolAccordion']) {
+        for (const id of ['settingsAccordion', 'roomsAccordion', 'motionAccordion', 'protocolAccordion']) {
             const el = document.getElementById(id);
             const panel = el ? el.querySelector('.accordion-panel') : null;
             panels[id] = {
@@ -760,7 +806,7 @@ function restoreUIState() {
         if (!raw) return;
         const saved = JSON.parse(raw);
         const panels = saved?.panels || {};
-        for (const id of ['roomsAccordion', 'motionAccordion', 'protocolAccordion']) {
+        for (const id of ['settingsAccordion', 'roomsAccordion', 'motionAccordion', 'protocolAccordion']) {
             const el = document.getElementById(id);
             const button = el?.querySelector('.accordion-toggle');
             const panel = el?.querySelector('.accordion-panel');
@@ -805,6 +851,8 @@ for (const button of document.querySelectorAll('.accordion-toggle')) {
 
 document.getElementById('arm').addEventListener('click', e => { e.preventDefault(); requestCoreToggle('arm'); });
 document.getElementById('automatic').addEventListener('click', e => { e.preventDefault(); requestCoreToggle('automatic'); });
+document.getElementById('dahuaAlarmLightEnabled').addEventListener('click', e => { e.preventDefault(); requestCoreToggle('dahuaAlarmLightEnabled'); });
+document.getElementById('dahuaSirenEnabled').addEventListener('click', e => { e.preventDefault(); requestCoreToggle('dahuaSirenEnabled'); });
 for (const id of ['autoFrom', 'autoTo']) {
     const input = document.getElementById(id);
     input.addEventListener('change', () => requestTimeChange(id));
