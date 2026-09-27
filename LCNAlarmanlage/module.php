@@ -14,8 +14,6 @@ class LCNAlarmanlage extends IPSModuleStrict
 
     private const MAX_EVENTS_PER_SESSION = 1000;
     private const SAMSUNG_TIZEN_MODULE_GUID = '{65BF76B4-042C-4971-A5CC-292FA5E49C86}';
-    // Eigenes, separat getestetes Dahua-TiOC-Modul 0.1.0.
-    private const DAHUA_ALARM_MODULE_GUID = '{CA5DA1DD-81A8-49B8-B710-FD4427A69ED9}';
     // Exakte Modul-GUID von LCN Light Control 0.6.1 (LCNLight).
     private const LCN_LIGHT_MODULE_GUID = '{331B7F25-09CF-4611-9300-EADA0BB9AFF3}';
     private const SERVER_SOCKET_MODULE_GUID = '{8062CF2B-600E-41D6-AD4B-1BA66C32D6ED}';
@@ -84,12 +82,6 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterPropertyInteger('MediaServerPort', 8090);
         $this->RegisterPropertyInteger('VideoStartDelayMs', 4000);
 
-        // Dahua Active Deterrence ist ein optionales, separat getestetes Ausgabemodul.
-        // Die Auswahl der konkreten Instanz erfolgt in der Modulkonfiguration; ob
-        // Alarmlicht und/oder Sirene pro Alarm verwendet werden, wird ohne zusätzliche
-        // Symcon-Variablen persistent über Attribute aus der Kachelvisualisierung gesetzt.
-        $this->RegisterPropertyInteger('DahuaInstanceID', 0);
-
         $this->RegisterAttributeInteger('ManualOverride', self::OVERRIDE_NONE);
         $this->RegisterAttributeBoolean('ArmedReady', false);
         $this->RegisterAttributeString('CurrentSession', '{}');
@@ -99,6 +91,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         // Persistente Nachlauf-Deadline: startet erst, wenn alle aktuell überwachten
         // GUS frei sind. Jede neue Bewegung verwirft die Deadline vollständig.
         $this->RegisterAttributeInteger('AlarmQuietNotBefore', 0);
+        // Erste echte Bewegungsflanke; nach 60 Sekunden ohne zweite Flanke verfällt sie.
+        $this->RegisterAttributeString('PendingMotion', '{}');
         $this->RegisterAttributeString('RegisteredSensorIDs', '[]');
         $this->RegisterAttributeString('RegisteredWatchSensorIDs', '[]');
         // 0.1.16: nur technische Registrierungen fuer die zusaetzliche reine
@@ -135,17 +129,6 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->RegisterAttributeString('TVAlarmVolumeRaisedSessionID', '');
         $this->RegisterAttributeString('TVAlarmVolumeFinalizeSessionID', '');
         $this->RegisterAttributeString('TVAlarmVolumeFinalizeReason', '');
-
-        // Dahua-Einstellungen und Sitzungsbesitz: alles technisch/persistent, aber
-        // bewusst ohne zusätzliche sichtbare Symcon-Variablen. Die beiden Benutzer-
-        // Einstellungen starten nach dem Update sicherheitshalber AUS.
-        $this->RegisterAttributeBoolean('DahuaAlarmLightEnabled', false);
-        $this->RegisterAttributeBoolean('DahuaSirenEnabled', false);
-        $this->RegisterAttributeInteger('RegisteredDahuaInstanceID', 0);
-        $this->RegisterAttributeInteger('DahuaOwnerInstanceID', 0);
-        $this->RegisterAttributeString('DahuaOwnerSessionID', '');
-        $this->RegisterAttributeBoolean('DahuaSessionLightEnabled', false);
-        $this->RegisterAttributeBoolean('DahuaSessionSirenEnabled', false);
 
         // Persistenter technischer Zustand des integrierten Alarmvideo-Pfads.
         $this->RegisterAttributeInteger('MediaHelperID', 0);
@@ -336,7 +319,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             return;
         }
 
-        $this->InitializeRuntime(false);
+        $this->InitializeRuntime();
     }
 
     /**
@@ -374,9 +357,6 @@ class LCNAlarmanlage extends IPSModuleStrict
             if (($element['name'] ?? '') === 'TVInstanceID') {
                 $element['validModules'] = [self::SAMSUNG_TIZEN_MODULE_GUID];
             }
-            if (($element['name'] ?? '') === 'DahuaInstanceID') {
-                $element['validModules'] = [self::DAHUA_ALARM_MODULE_GUID];
-            }
         }
         unset($element);
 
@@ -406,7 +386,7 @@ class LCNAlarmanlage extends IPSModuleStrict
     public function MessageSink(int $TimeStamp, int $SenderID, int $Message, array $Data): void
     {
         if ($Message === IPS_KERNELSTARTED) {
-            $this->InitializeRuntime(true);
+            $this->InitializeRuntime();
             return;
         }
 
@@ -486,32 +466,6 @@ class LCNAlarmanlage extends IPSModuleStrict
                     $this->ApplyCurrentSchedule('time-changed');
                 }
                 $this->ScheduleNextBoundary();
-                break;
-
-            case 'DahuaAlarmLightEnabled':
-            case 'DahuaSirenEnabled':
-                // Während einer aktiven Alarm-Session wird die Aktorauswahl absichtlich
-                // nicht verändert. Damit kann ein versehentlicher Touch niemals mitten
-                // im Alarm eine Sirene neu zuschalten oder einen laufenden Ausgang lösen.
-                if ((bool) $this->GetValue('AlarmActive')) {
-                    $this->PushVisualizationState();
-                    return;
-                }
-
-                $desired = (bool) $Value;
-                $dahuaConfig = $this->ReadDahuaConfig();
-                if ($desired && !(bool) ($dahuaConfig['enabled'] ?? false)) {
-                    // Keine scheinbar aktive Einstellung zulassen, wenn die ausgewählte
-                    // Dahua-Instanz nicht verfügbar/kompatibel ist.
-                    $this->PushVisualizationState();
-                    return;
-                }
-
-                if ($Ident === 'DahuaAlarmLightEnabled') {
-                    $this->WriteAttributeBoolean('DahuaAlarmLightEnabled', $desired);
-                } else {
-                    $this->WriteAttributeBoolean('DahuaSirenEnabled', $desired);
-                }
                 break;
 
             case 'Acknowledge':
@@ -695,10 +649,6 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetTimerInterval('RearmDisplay', 0);
 
         $this->InvalidateEmailAckToken($endedSessionID);
-        // Dahua zuerst beenden: StopAlarm() setzt im Dahua-Modul sofort den internen
-        // Alarmzustand AUS und stoppt dessen 11-s-Sirenentimer, bevor weitere langsamere
-        // Licht-/TV-Rücksetzpfade laufen.
-        $this->EndDahuaForAlarm($endedSessionID, 'automatic-afterrun');
         $this->SetPanicForSession($endedSessionID, false, 'automatic-afterrun');
         $this->EndTVForAlarm($endedSessionID, 'automatic-afterrun');
 
@@ -1311,28 +1261,20 @@ class LCNAlarmanlage extends IPSModuleStrict
         if ($resumeActiveAlarm && $freshState === self::SESSION_ACTIVE && $freshSessionID === $sessionID) {
             $this->SetPanicForSession($sessionID, true, 'restart');
             $this->StartTVForAlarm($sessionID);
-            // Nur ein echter Kernelstart darf eine von 0.1.27 bereits besessene Dahua-
-            // Session fortsetzen. Ein normales ApplyChanges/Update darf niemals erstmals
-            // Alarmlicht oder Sirene aktivieren.
-            if ($this->GetBuffer('DahuaResumeAllowed') === '1') {
-                $this->ResumeDahuaForAlarm($sessionID, 'kernel-restart');
-            }
         } elseif ($restoreRearmLights && $freshState === self::SESSION_REARM_WAIT && $freshSessionID === $sessionID) {
             $this->SetPanicForSession($sessionID, false, 'restart-rearm-wait');
-            // Crash-Schutz: war die Session intern bereits beendet, muss ein eventuell
-            // zuvor gestarteter Dahua-Ausgang best-effort ebenfalls beendet werden.
-            $this->EndDahuaForAlarm($sessionID, 'restart-rearm-wait');
         }
 
         $this->ScheduleNextBoundary();
         $this->RefreshDisplay();
     }
 
-    private function InitializeRuntime(bool $AllowDahuaResume): void
+    private function InitializeRuntime(): void
     {
         // Während der Rekonstruktion dürfen eintreffende Sensorupdates nur die Baseline
         // aktualisieren, aber niemals einen historischen Alarm erzeugen.
         $this->SetBuffer('RuntimeReady', '0');
+        $this->WriteAttributeString('PendingMotion', '{}');
         $this->SetBuffer('StartupExpectedSensorIDs', '[]');
         $this->SetBuffer('StartupSeenSensorIDs', '[]');
         $this->SetBuffer('StartupSyncAttempt', '0');
@@ -1341,8 +1283,6 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetBuffer('PanicLightMap', '{}');
         $this->SetBuffer('NotificationQueue', '[]');
         $this->SetBuffer('TVConfig', '{}');
-        $this->SetBuffer('DahuaConfig', '{}');
-        $this->SetBuffer('DahuaResumeAllowed', $AllowDahuaResume ? '1' : '0');
 
         $this->SetTimerInterval('AlarmTimeout', 0);
         $this->SetTimerInterval('RearmTimeout', 0);
@@ -1373,8 +1313,6 @@ class LCNAlarmanlage extends IPSModuleStrict
         [$panicVariableID, $panicErrors] = $this->BuildPanicConfig();
         [$notificationConfig, $notificationWarnings] = $this->BuildNotificationConfig();
         [$tvConfig, $tvWarnings] = $this->BuildTVConfig();
-        [$dahuaConfig, $dahuaWarnings] = $this->BuildDahuaConfig();
-        $this->UpdateDahuaReference((int) ($dahuaConfig['instanceID'] ?? 0));
         if ((bool) ($tvConfig['enabled'] ?? false)) {
             // Der DLNA-Server wird einmalig bzw. nach Konfigurationsänderungen
             // vorbereitet. Bei belegtem Wunschport wird automatisch der nächste
@@ -1397,10 +1335,8 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetBuffer('PanicGroupVariableID', (string) $panicVariableID);
         $this->SetBuffer('NotificationConfig', $this->Encode($notificationConfig));
         $this->SetBuffer('TVConfig', $this->Encode($tvConfig));
-        $this->SetBuffer('DahuaConfig', $this->Encode($dahuaConfig));
         $this->SetBuffer('NotificationWarnings', $this->Encode($notificationWarnings));
         $this->SetBuffer('TVWarnings', $this->Encode($tvWarnings));
-        $this->SetBuffer('DahuaWarnings', $this->Encode($dahuaWarnings));
 
         foreach ($notificationWarnings as $warning) {
             IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Benachrichtigung: ' . $warning);
@@ -1409,10 +1345,6 @@ class LCNAlarmanlage extends IPSModuleStrict
         foreach ($tvWarnings as $warning) {
             IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Samsung-TV: ' . $warning);
             $this->SendDebug('TVConfig', $warning, 0);
-        }
-        foreach ($dahuaWarnings as $warning) {
-            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Dahua: ' . $warning);
-            $this->SendDebug('DahuaConfig', $warning, 0);
         }
         if (!(bool) ($tvConfig['enabled'] ?? false)) {
             // Deaktivierte/ungueltige optionale TV-/Videofunktion darf keinerlei
@@ -1517,10 +1449,6 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ($sessionState !== self::SESSION_ACTIVE) {
             $this->InvalidateEmailAckToken('');
-            $staleDahuaSessionID = $this->ReadAttributeString('DahuaOwnerSessionID');
-            if ($staleDahuaSessionID !== '') {
-                $this->EndDahuaForAlarm($staleDahuaSessionID, 'startup-no-active-session');
-            }
             $staleVideoSessionID = $this->ReadAttributeString('VideoSessionID');
             if ($staleVideoSessionID !== '' || $this->ReadAttributeInteger('VideoActive') === 1) {
                 $this->StopAlarmVideoForSession($staleVideoSessionID, 'startup-no-active-session', true);
@@ -1682,24 +1610,38 @@ class LCNAlarmanlage extends IPSModuleStrict
                         $this->WriteAttributeBoolean('ArmedReady', true);
                     }
                 } elseif ($watched && $newValue) {
-                    $session = $this->CreateAlarmSession($VariableID);
-                    $this->WriteSession('CurrentSession', $session);
-                    $this->WriteAttributeBoolean('ArmedReady', false);
+                    $now = microtime(true);
+                    $pending = json_decode($this->ReadAttributeString('PendingMotion'), true);
+                    if (!is_array($pending) || !isset($pending['at']) || $now - (float) $pending['at'] > 60.0 || $now < (float) $pending['at']) {
+                        $this->WriteAttributeString('PendingMotion', $this->Encode(['at' => $now, 'sensorID' => $VariableID]));
+                    } else {
+                        $this->WriteAttributeString('PendingMotion', '{}');
+                        $session = $this->CreateAlarmSession($VariableID);
+                        array_unshift($session['events'], [
+                            'seq' => 1, 'ts' => (float) $pending['at'],
+                            'sensorID' => (int) ($pending['sensorID'] ?? 0),
+                            'sensor' => $this->SensorName((int) ($pending['sensorID'] ?? 0)),
+                            'event' => 'motion'
+                        ]);
+                        $session['events'][1]['seq'] = 2;
+                        $this->WriteSession('CurrentSession', $session);
+                        $this->WriteAttributeBoolean('ArmedReady', false);
 
-                    // Alle schnellen, lokalen Zustandsänderungen der ersten Auslösung
-                    // werden noch unter derselben Semaphore gesetzt. Dadurch kann eine
-                    // exakt gleichzeitig eintreffende manuelle Abschaltung sie danach
-                    // zuverlässig wieder aufheben; außerhalb der Semaphore wird nichts
-                    // erneut auf ALARM gesetzt.
-                    $this->SetValue('AlarmActive', true);
-                    $this->SetValue('Acknowledge', false);
-                    $this->SetAlarmControlsVisible(true);
-                    // Kein fester Timer ab Alarmstart. Die Nachlaufzeit beginnt erst,
-                    // wenn alle überwachten GUS wieder frei melden.
-                    $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
-                    $this->SetTimerInterval('AlarmTimeout', 0);
-                    $firstAlarmTrigger = true;
-                    $alarmSessionID = (string) ($session['id'] ?? '');
+                        // Alle schnellen, lokalen Zustandsänderungen der ersten Auslösung
+                        // werden noch unter derselben Semaphore gesetzt. Dadurch kann eine
+                        // exakt gleichzeitig eintreffende manuelle Abschaltung sie danach
+                        // zuverlässig wieder aufheben; außerhalb der Semaphore wird nichts
+                        // erneut auf ALARM gesetzt.
+                        $this->SetValue('AlarmActive', true);
+                        $this->SetValue('Acknowledge', false);
+                        $this->SetAlarmControlsVisible(true);
+                        // Kein fester Timer ab Alarmstart. Die Nachlaufzeit beginnt erst,
+                        // wenn alle überwachten GUS wieder frei melden.
+                        $this->WriteAttributeInteger('AlarmQuietNotBefore', 0);
+                        $this->SetTimerInterval('AlarmTimeout', 0);
+                        $firstAlarmTrigger = true;
+                        $alarmSessionID = (string) ($session['id'] ?? '');
+                    }
                 }
             }
         } finally {
@@ -1734,9 +1676,6 @@ class LCNAlarmanlage extends IPSModuleStrict
                 // Der direkte Samsung-WakeUp wird zuerst ausgeführt und kann dadurch
                 // weder von Paniklicht noch von Push/SMTP verzögert werden.
                 $this->StartTVForAlarm($alarmSessionID);
-                // Dahua-Modul selbst arbeitet asynchron; dieser Hook blockiert den
-                // Alarmkern nicht mit Kamera-HTTP-Aufrufen.
-                $this->StartDahuaForAlarm($alarmSessionID);
                 $this->SetPanicForSession($alarmSessionID, true, 'alarm-start');
                 $this->QueueAlarmNotifications($alarmSessionID);
             }
@@ -2059,7 +1998,6 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         if ($endedSessionID !== '') {
             $this->InvalidateEmailAckToken($endedSessionID);
-            $this->EndDahuaForAlarm($endedSessionID, 'acknowledged/' . $Source);
             $this->SetPanicForSession($endedSessionID, false, 'acknowledged/' . $Source);
             $this->EndTVForAlarm($endedSessionID, 'acknowledged/' . $Source);
         }
@@ -2095,19 +2033,18 @@ class LCNAlarmanlage extends IPSModuleStrict
         $alarmBecameInactive = false;
         $panicOffSessionID = '';
         $tvOffSessionID = '';
-        $dahuaOffSessionID = '';
 
         try {
             $this->SetValue('Arm', $Armed);
 
             if (!$Armed) {
+                $this->WriteAttributeString('PendingMotion', '{}');
                 // Zuerst intern unscharf und Session beenden. Externe/langsame Aktionen
                 // werden erst NACH diesem kritischen Abschnitt ausgeführt.
                 $current = $this->ReadSession('CurrentSession');
                 if (($current['state'] ?? self::SESSION_NONE) === self::SESSION_ACTIVE) {
                     $panicOffSessionID = (string) ($current['id'] ?? '');
                     $tvOffSessionID = $panicOffSessionID;
-                    $dahuaOffSessionID = $panicOffSessionID;
                 }
                 $this->WriteAttributeBoolean('ArmedReady', false);
                 $this->WriteAttributeInteger('RearmNotBefore', 0);
@@ -2150,9 +2087,6 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
         if ($hideAlarmControls) {
             $this->SetAlarmControlsVisible(false);
-        }
-        if ($dahuaOffSessionID !== '') {
-            $this->EndDahuaForAlarm($dahuaOffSessionID, 'anlage-aus/' . $Reason);
         }
         if ($panicOffSessionID !== '') {
             $this->InvalidateEmailAckToken($panicOffSessionID);
@@ -2473,10 +2407,6 @@ class LCNAlarmanlage extends IPSModuleStrict
             'lastAlarm' => (string) $this->GetValue('LastAlarm'),
             'alarmQuietDeadline' => $this->ReadAttributeInteger('AlarmQuietNotBefore'),
             'rearmDeadline' => $this->ReadAttributeInteger('RearmNotBefore'),
-            'dahuaAvailable' => (bool) (($this->ReadDahuaConfig()['enabled'] ?? false)),
-            'dahuaInstanceName' => (string) (($this->ReadDahuaConfig()['name'] ?? '')),
-            'dahuaAlarmLightEnabled' => $this->ReadAttributeBoolean('DahuaAlarmLightEnabled'),
-            'dahuaSirenEnabled' => $this->ReadAttributeBoolean('DahuaSirenEnabled'),
             'sensors' => $sensors,
             'motionSensors' => $motionSensors,
             'history' => $history
@@ -2511,175 +2441,6 @@ class LCNAlarmanlage extends IPSModuleStrict
         $ackID = $this->GetIDForIdent('Acknowledge');
         IPS_SetHidden($alarmID, !$Visible);
         IPS_SetHidden($ackID, !$Visible);
-    }
-
-    /**
-     * Optionales Dahua-TiOC-Ausgabemodul. Eine fehlende/fehlerhafte Dahua-Instanz
-     * ist niemals ein Konfigurationsfehler des Alarmkerns, sondern nur eine Warnung.
-     */
-    private function BuildDahuaConfig(): array
-    {
-        $warnings = [];
-        $instanceID = $this->ReadPropertyInteger('DahuaInstanceID');
-        $enabled = false;
-        $name = '';
-
-        if ($instanceID > 0) {
-            try {
-                if (!IPS_InstanceExists($instanceID)) {
-                    $warnings[] = 'ausgewählte Instanz existiert nicht';
-                } elseif (!in_array($instanceID, IPS_GetInstanceListByModuleID(self::DAHUA_ALARM_MODULE_GUID), true)) {
-                    $warnings[] = 'ausgewählte Instanz ist keine Dahua Alarmkameras-Instanz';
-                } elseif (!function_exists('DAHUAALARM_StartAlarm') || !function_exists('DAHUAALARM_StopAlarm')) {
-                    $warnings[] = 'DAHUAALARM_StartAlarm/StopAlarm sind nicht verfügbar';
-                } else {
-                    $enabled = true;
-                    $name = IPS_GetName($instanceID);
-                }
-            } catch (Throwable $e) {
-                $warnings[] = 'Instanzprüfung fehlgeschlagen: ' . $e->getMessage();
-            }
-        }
-
-        return [
-            [
-                'enabled' => $enabled,
-                'instanceID' => $enabled ? $instanceID : 0,
-                'name' => $name
-            ],
-            $warnings
-        ];
-    }
-
-    private function ReadDahuaConfig(): array
-    {
-        $decoded = json_decode($this->GetBuffer('DahuaConfig'), true);
-        return is_array($decoded) ? $decoded : [];
-    }
-
-    private function StartDahuaForAlarm(string $SessionID): void
-    {
-        if ($SessionID === '' || !$this->IsActiveSession($SessionID)) {
-            return;
-        }
-
-        $light = $this->ReadAttributeBoolean('DahuaAlarmLightEnabled');
-        $siren = $this->ReadAttributeBoolean('DahuaSirenEnabled');
-        if (!$light && !$siren) {
-            return;
-        }
-
-        $config = $this->ReadDahuaConfig();
-        $instanceID = (int) ($config['instanceID'] ?? 0);
-        if (!(bool) ($config['enabled'] ?? false) || $instanceID <= 0) {
-            $this->SendDebug('Dahua', 'Alarmstart übersprungen: keine gültige Dahua-Instanz konfiguriert', 0);
-            return;
-        }
-
-        // Ownership vor dem optionalen Aufruf sichern. Selbst wenn der externe Aufruf
-        // fehlschlägt, kann Alarmende später noch best-effort StopAlarm versuchen.
-        $this->WriteAttributeInteger('DahuaOwnerInstanceID', $instanceID);
-        $this->WriteAttributeString('DahuaOwnerSessionID', $SessionID);
-        $this->WriteAttributeBoolean('DahuaSessionLightEnabled', $light);
-        $this->WriteAttributeBoolean('DahuaSessionSirenEnabled', $siren);
-
-        try {
-            DAHUAALARM_StartAlarm($instanceID, $light, $siren);
-            $this->SendDebug(
-                'Dahua',
-                'Alarmstart an Instanz #' . $instanceID .
-                ' (Licht=' . ($light ? 'EIN' : 'AUS') . ', Sirene=' . ($siren ? 'EIN' : 'AUS') . ')',
-                0
-            );
-        } catch (Throwable $e) {
-            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Dahua Alarmstart fehlgeschlagen: ' . $e->getMessage());
-            $this->SendDebug('Dahua', 'Alarmstart fehlgeschlagen: ' . $e->getMessage(), 0);
-        }
-    }
-
-    /**
-     * Neustartfortsetzung nur für eine Session, die 0.1.27 vor dem Neustart selbst
-     * als Dahua-Owner markiert hatte. Damit kann ein Update niemals erstmals Sirene
-     * oder Warnlicht in eine bereits laufende Alt-Session einschalten.
-     */
-    private function ResumeDahuaForAlarm(string $SessionID, string $Reason): void
-    {
-        if ($SessionID === '' || $this->ReadAttributeString('DahuaOwnerSessionID') !== $SessionID) {
-            return;
-        }
-
-        $instanceID = $this->ReadAttributeInteger('DahuaOwnerInstanceID');
-        $light = $this->ReadAttributeBoolean('DahuaSessionLightEnabled');
-        $siren = $this->ReadAttributeBoolean('DahuaSessionSirenEnabled');
-        if ($instanceID <= 0 || (!$light && !$siren)) {
-            return;
-        }
-
-        try {
-            if (!IPS_InstanceExists($instanceID) || !function_exists('DAHUAALARM_StartAlarm')) {
-                throw new RuntimeException('gespeicherte Dahua-Instanz/Funktion nicht verfügbar');
-            }
-            DAHUAALARM_StartAlarm($instanceID, $light, $siren);
-            $this->SendDebug('Dahua', 'Aktive Session nach Neustart fortgesetzt (' . $Reason . ')', 0);
-        } catch (Throwable $e) {
-            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Dahua Neustartfortsetzung fehlgeschlagen: ' . $e->getMessage());
-            $this->SendDebug('Dahua', 'Neustartfortsetzung fehlgeschlagen: ' . $e->getMessage(), 0);
-        }
-    }
-
-    private function EndDahuaForAlarm(string $SessionID, string $Reason): void
-    {
-        $ownerSessionID = $this->ReadAttributeString('DahuaOwnerSessionID');
-        if ($ownerSessionID === '') {
-            return;
-        }
-        if ($SessionID !== '' && $ownerSessionID !== $SessionID) {
-            return;
-        }
-
-        $instanceID = $this->ReadAttributeInteger('DahuaOwnerInstanceID');
-        try {
-            if ($instanceID > 0 && IPS_InstanceExists($instanceID) && function_exists('DAHUAALARM_StopAlarm')) {
-                DAHUAALARM_StopAlarm($instanceID);
-                $this->SendDebug('Dahua', 'Alarmende an Instanz #' . $instanceID . ' (' . $Reason . ')', 0);
-            } else {
-                $this->SendDebug('Dahua', 'Alarmende konnte Instanz nicht ansprechen (' . $Reason . ')', 0);
-            }
-        } catch (Throwable $e) {
-            IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Dahua Alarmende fehlgeschlagen: ' . $e->getMessage());
-            $this->SendDebug('Dahua', 'Alarmende fehlgeschlagen: ' . $e->getMessage(), 0);
-        } finally {
-            $this->ClearDahuaOwnership();
-        }
-    }
-
-    private function ClearDahuaOwnership(): void
-    {
-        $this->WriteAttributeInteger('DahuaOwnerInstanceID', 0);
-        $this->WriteAttributeString('DahuaOwnerSessionID', '');
-        $this->WriteAttributeBoolean('DahuaSessionLightEnabled', false);
-        $this->WriteAttributeBoolean('DahuaSessionSirenEnabled', false);
-    }
-
-    private function UpdateDahuaReference(int $InstanceID): void
-    {
-        $old = $this->ReadAttributeInteger('RegisteredDahuaInstanceID');
-        if ($old > 0 && $old !== $InstanceID) {
-            try {
-                $this->UnregisterReference($old);
-            } catch (Throwable $e) {
-                $this->SendDebug('DahuaReference', 'Alte Referenz konnte nicht entfernt werden: ' . $e->getMessage(), 0);
-            }
-        }
-
-        if ($InstanceID > 0 && $old !== $InstanceID) {
-            try {
-                $this->RegisterReference($InstanceID);
-            } catch (Throwable $e) {
-                $this->SendDebug('DahuaReference', 'Referenz konnte nicht registriert werden: ' . $e->getMessage(), 0);
-            }
-        }
-        $this->WriteAttributeInteger('RegisteredDahuaInstanceID', $InstanceID > 0 ? $InstanceID : 0);
     }
 
     private function BuildTVConfig(): array
@@ -4804,6 +4565,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $alarmAfterrunMs = 0;
         try {
             $this->SetValue($ident, $Enabled);
+            $this->WriteAttributeString('PendingMotion', '{}');
             $states = $this->ReadSensorStates();
             $session = $this->ReadSession('CurrentSession');
             $sessionState = (string) ($session['state'] ?? self::SESSION_NONE);
