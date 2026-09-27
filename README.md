@@ -1,9 +1,14 @@
 # LCN Alarmanlage
 
+## Version 0.1.28
+
+Der Alarm startet erst bei zwei neuen Bewegungen überwachter GUS innerhalb von 60 Sekunden. Derselbe GUS muss zwischen beiden Bewegungen Ruhe melden. Die Dahua-Integration der Version 0.1.27 ist vollständig enthalten.
+
 ## Version 0.1.27
 
-Ein Alarm startet erst bei zwei neuen Bewegungen überwachter GUS innerhalb von 60 Sekunden. Beide können vom selben GUS stammen, sofern er dazwischen Ruhe meldet. Nach Ablauf zählt die nächste Bewegung als erste. Alle übrigen Alarmfunktionen entsprechen 0.1.26.
+0.1.27 ergänzt die bestehende Alarmanlage rollbackfähig um die separat getestete **Dahua Alarmkameras**-Instanz. In der Kachel gibt es unter **Einstellungen** zwei Schalter für Rot/Blau-Alarmlicht und Sirene. Beide Einstellungen liegen ausschließlich in Modul-Attributen und erzeugen keine zusätzliche Symcon-Variable.
 
+Die Dahua-Ausgabe ist strikt optional: eine fehlende Kamera-/Dahua-Instanz darf weder GUS-Auswertung noch Paniklicht, Samsung-TV, Benachrichtigungen oder Scharfzustand beeinflussen. Bei Quittierung/Alarmende wird Dahua vor den langsameren Licht-/TV-Rücksetzpfaden gestoppt. Ein Update/ApplyChanges kann niemals erstmals Sirene oder Warnlicht aktivieren.
 
 ## Version 0.1.24
 

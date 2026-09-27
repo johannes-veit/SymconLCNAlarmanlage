@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Version 0.1.17: direkte, rollbackfähige Visualisierungskorrektur auf Basis 0.1.16; 0.1.14 bleibt die bewährte Rollback-Basis. Der Alarmkern, Lichtzustände, Neustartschutz, E-Mail-Quittierung sowie Samsung-WOL/Video bleiben unverändert. Neu: beim Scrollen schützt ein fester Hintergrundbereich die native Kachelüberschrift; in „Status Bewegungsmelder“ entfällt das Wort „Bewegungsmelder“ aus den Anzeigenamen und rechts steht wie beim Panik-Licht „Bewegung“ bzw. „Ruhe“. Keine zusätzlichen Symcon-Variablen und kein zusätzliches Polling."
+            "label": "Version 0.1.27: optionale Dahua-TiOC-Alarmkameras als gekapselte Zusatzfunktion. Rot/Blau-Alarmlicht und Sirene werden in der Kachel unter „Einstellungen“ getrennt ausgewählt; die bestehende Alarm-, Licht-, Samsung-, E-Mail- und Neustartlogik bleibt erhalten. Keine zusätzlichen sichtbaren Symcon-Variablen."
         },
         {
             "type": "List",
@@ -204,6 +204,15 @@
             "label": "Der TV wird beim ersten Alarmtrigger direkt über SamsungTizen_WakeUp() geweckt. Ist er nach 5 s laut vorhandener Statusvariable noch AUS, wird genau ein zweiter WakeUp gesendet. War der TV vor dem Alarm bereits EIN, bleibt er nach Alarmende EIN. Ein vom Alarm gestarteter TV wird nach Alarmende ausgeschaltet und anschließend lokal nachkontrolliert. Die TV-Helfer ändern niemals den Alarmanlagen-Hauptschalter, die Session oder den Wieder-scharf-Countdown."
         },
         {
+            "type": "SelectInstance",
+            "name": "DahuaInstanceID",
+            "caption": "Dahua – Alarmkameras-Instanz"
+        },
+        {
+            "type": "Label",
+            "label": "Optional: die separat installierte Instanz „Dahua Alarmkameras“ auswählen. Ob Rot/Blau-Alarmlicht, Sirene oder beide bei einem Alarm verwendet werden, wird anschließend direkt in der Alarmanlagen-Kachel unter „Einstellungen“ gewählt. Beide Optionen sind nach dem Update zunächst AUS. Eine fehlende Dahua-Instanz beeinflusst den Alarmkern nicht."
+        },
+        {
             "type": "Label",
             "label": "Neustartsicherheit: Beim Start werden alle konfigurierten nativen LCN-GUS einmalig über LCN_RequestStatus synchronisiert. Bis die Statuswerte als frische Baseline bestätigt sind, ist keine neue Alarmauslösung möglich. War die Anlage vor dem Symcon-Ausfall EIN, bleibt dieser persistente Zustand erhalten; die Zeitautomatik wird nicht rückwirkend umgeschaltet, sondern setzt an der nächsten regulären Zeitgrenze fort. Ein bereits aktiver Alarm wird nach dem Sensorabgleich fortgeführt."
         },
@@ -238,6 +247,10 @@
         {
             "type": "Label",
             "label": "Samsung Alarm-Lautstärke (0.1.26): Sobald der echte Medienabruf des Alarmvideos bestätigt ist, werden gekapselt 10× KEY_VOLUP-Click im 500-ms-Raster gesendet (ca. 5 s). Beim Alarmende wird zuerst das Video gestoppt, danach 6× KEY_VOLDOWN-Click im 500-ms-Raster versucht; ein unabhängiger 3-s-Finalizer setzt anschließend immer den bestehenden TV-Endpfad fort. Keine Press/Release-Steuerung, keine absoluten Lautstärkewerte und keine sichtbaren Zusatzvariablen."
+        },
+        {
+            "type": "Label",
+            "label": "Dahua Active Deterrence (0.1.27): keine zusätzlichen Symcon-Variablen. Rot/Blau wird beim Alarmstart einmal EIN und bei Alarmende/Quittierung AUS geschaltet. Die Sirene wird durch das separat getestete Dahua-Modul etwa alle 11 s neu gestartet (ca. 10 s Ton + ca. 1 s Pause). Änderungen der beiden Kachel-Einstellungen sind während eines aktiven Alarms gesperrt."
         }
     ]
 }
