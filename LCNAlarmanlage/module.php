@@ -1603,6 +1603,7 @@ class LCNAlarmanlage extends IPSModuleStrict
         $cancelAlarmAfterrun = false;
         $alarmAfterrunMs = 0;
         $changed = false;
+        $ignoredKaminMotion = false;
 
         try {
             // Während der Startschutzphase zählt auch ein VM_UPDATE ohne Wertänderung
@@ -1632,6 +1633,13 @@ class LCNAlarmanlage extends IPSModuleStrict
             // übernommen. Damit kann ein bereits aktiver GUS niemals durch die
             // Initialisierung einen historischen Fehlalarm auslösen.
             if ($this->GetBuffer('RuntimeReady') !== '1') {
+                return;
+            }
+
+            // Flanke als Baseline behalten, aber im Uhrfenster nicht für Alarm
+            // oder Nachlauf verwenden. Nach 35:00 entsteht kein verzögerter Impuls.
+            if ($newValue && $this->IsKaminSensor($VariableID) && $this->IsKaminClockWindow()) {
+                $ignoredKaminMotion = true;
                 return;
             }
 
@@ -1689,6 +1697,10 @@ class LCNAlarmanlage extends IPSModuleStrict
                     if (!is_array($pending) || !isset($pending['at'])
                         || $now - (float) $pending['at'] > 60.0 || $now < (float) $pending['at']) {
                         $this->WriteAttributeString('PendingMotion', $this->Encode(['at' => $now, 'sensorID' => $VariableID]));
+                    } elseif ($this->IsKaminSensor((int) ($pending['sensorID'] ?? 0))
+                        && !$this->IsKuecheSensor($VariableID)) {
+                        // Kamin als Erstauslöser braucht zwingend die Küche. Weitere
+                        // Kamin-Flanken und andere Räume zählen hier nicht als zweite.
                     } else {
                         $this->WriteAttributeString('PendingMotion', '{}');
                         $session = $this->CreateAlarmSession($VariableID);
@@ -1713,6 +1725,9 @@ class LCNAlarmanlage extends IPSModuleStrict
             }
         } finally {
             IPS_SemaphoreLeave($this->EngineSemaphoreName());
+            if ($ignoredKaminMotion) {
+                $this->RefreshDisplay();
+            }
         }
 
         if (!$changed) {
@@ -4901,6 +4916,34 @@ class LCNAlarmanlage extends IPSModuleStrict
             $summary .= ' · Hinweis TV';
         }
         $this->SetSummary($summary);
+    }
+
+    private function IsKaminClockWindow(): bool
+    {
+        // Jede Stunde 25:00 bis 34:59 Ortszeit; um 35:00 endet das Fenster.
+        $minute = (int) date('i');
+        return $minute >= 25 && $minute < 35;
+    }
+
+    private function IsKaminSensor(int $VariableID): bool
+    {
+        return $this->SensorNameHasLocation($VariableID, 'kamin');
+    }
+
+    private function IsKuecheSensor(int $VariableID): bool
+    {
+        return $this->SensorNameHasLocation($VariableID, 'kueche');
+    }
+
+    private function SensorNameHasLocation(int $VariableID, string $Room): bool
+    {
+        $name = strtolower(strtr($this->SensorName($VariableID), [
+            'Ä' => 'ae', 'Ö' => 'oe', 'Ü' => 'ue', 'ä' => 'ae', 'ö' => 'oe', 'ü' => 'ue', 'ß' => 'ss'
+        ]));
+        $name = preg_replace('/[^a-z0-9]+/', ' ', $name) ?? '';
+        return preg_match('/(?:^| )eg(?: |$)/', $name) === 1
+            && (str_contains($name, 'wohnen') || str_contains($name, 'wohnung'))
+            && str_contains($name, $Room);
     }
 
     private function SensorName(int $VariableID): string

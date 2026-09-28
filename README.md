@@ -1,5 +1,13 @@
 # LCN Alarmanlage
 
+## Version 0.1.30
+
+Bewegungen von EG Wohnen Kamin werden zu jeder vollen Stunde zwischen Minute 25:00 und 34:59 bei der Alarmauslösung ignoriert. Der Melderstatus bleibt sichtbar; andere GUS und die übrigen Alarmregeln entsprechen 0.1.29.
+
+## Version 0.1.29
+
+Beginnt das 60-Sekunden-Fenster mit EG Wohnen Kamin, muss EG Wohnen Küche die zweite Bewegung melden. Kamin allein löst keinen Alarm aus. Beginnt es mit einem anderen überwachten Melder, gilt weiterhin die allgemeine Zwei-Bewegungen-Regel aus 0.1.28. Die Zuordnung verwendet die konfigurierten Namen der überwachten GUS.
+
 ## Version 0.1.28
 
 Der Alarm startet erst bei zwei neuen Bewegungen überwachter GUS innerhalb von 60 Sekunden. Derselbe GUS muss zwischen beiden Bewegungen Ruhe melden. Die Dahua-Integration der Version 0.1.27 ist vollständig enthalten.

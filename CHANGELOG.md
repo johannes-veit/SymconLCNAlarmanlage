@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.30
+
+- EG Wohnen Kamin: Bewegungsflanken werden jede Stunde von Minute 25:00 bis 34:59 Ortszeit für den Alarm ignoriert. Der physische Zustand wird weiterhin als Baseline und in der Statusanzeige aktualisiert, sodass nach 35:00 kein nachträglicher Alarmimpuls entsteht.
+- Freimeldungen und alle anderen GUS sowie die Zwei-Bewegungen-Regeln einschließlich der Kamin/Küche-Bestätigung bleiben unverändert.
+
+## 0.1.29
+
+- Sonderregel für EG Wohnen Kamin: Ist dieser überwachte GUS die erste Bewegung, löst innerhalb von 60 Sekunden nur eine Bewegung von EG Wohnen Küche den Alarm aus. Wiederholte Kamin-Bewegungen und Bewegungen anderer Räume zählen nicht als zweite Bewegung.
+- Alle anderen ersten Bewegungen behalten die bisherige Zwei-Bewegungen-Regel. Dahua, TV, Licht, Benachrichtigung und Alarmende bleiben unverändert.
+
 ## 0.1.28
 
 - Alarm erst bei der zweiten echten Bewegungsflanke eines überwachten GUS innerhalb von 60 Sekunden; der Melder darf derselbe oder ein anderer sein. Derselbe GUS muss dazwischen Ruhe melden.
