@@ -352,6 +352,16 @@ button, input { touch-action: manipulation; }
         </div>
     </section>
 
+    <section class="accordion" id="personAccordion">
+        <button class="accordion-toggle" type="button" data-accordion="personAccordion" aria-expanded="false">
+            <span class="accordion-arrow">›</span><span>Personenerkennung Kameras</span>
+        </button>
+        <div class="accordion-panel" id="personPanel">
+            <div class="panel-scroll-content"><div id="personDetections" class="detail-content"><div class="loading-row">Daten werden geladen …</div></div></div>
+            <div class="manual-scrollbar" aria-hidden="true"><div class="manual-scrollbar-thumb"></div></div>
+        </div>
+    </section>
+
     <section class="accordion" id="protocolAccordion">
         <button class="accordion-toggle" type="button" data-accordion="protocolAccordion" aria-expanded="false">
             <span class="accordion-arrow">›</span><span>Protokoll</span>
@@ -378,7 +388,7 @@ const KNOWN_KEYS = [
     'arm', 'status', 'automatic', 'autoFrom', 'autoTo', 'alarmActive',
     'firstTrigger', 'lastMovement', 'motionCount', 'lastAlarm',
     'alarmQuietDeadline', 'rearmDeadline', 'dahuaAvailable', 'dahuaInstanceName',
-    'dahuaAlarmLightEnabled', 'dahuaSirenEnabled', 'sensors', 'motionSensors', 'history'
+    'dahuaAlarmLightEnabled', 'dahuaSirenEnabled', 'sensors', 'motionSensors', 'personDetections', 'history'
 ];
 const STATE_CACHE_KEY = 'LCNAlarmanlage.state.v127';
 const UI_CACHE_KEY = 'LCNAlarmanlage.ui.v127';
@@ -388,6 +398,7 @@ let state = {};
 let haveValidState = false;
 let roomsSignature = null;
 let motionSignature = null;
+let personSignature = null;
 let historySignature = null;
 let lastRefreshRequest = 0;
 const pendingActions = new Map();
@@ -595,7 +606,7 @@ function mergeState(incoming) {
     for (const key of KNOWN_KEYS) {
         if (!hasOwn(payload, key)) continue;
         const value = payload[key];
-        if ((key === 'sensors' || key === 'motionSensors' || key === 'history') && !Array.isArray(value)) {
+        if ((key === 'sensors' || key === 'motionSensors' || key === 'personDetections' || key === 'history') && !Array.isArray(value)) {
             continue; // fehlerhafte Teilnachricht darf eine bestehende Liste nicht leeren
         }
         state[key] = value;
@@ -745,6 +756,40 @@ function renderMotionSensors() {
     if (panel) requestAnimationFrame(() => { setPanelScrollTop(panel, oldScroll); refreshPanelScroller(panel); });
 }
 
+function renderPersonDetections() {
+    if (!Array.isArray(state.personDetections)) return;
+    const signature = JSON.stringify(state.personDetections);
+    if (signature === personSignature) return;
+    personSignature = signature;
+
+    const host = document.getElementById('personDetections');
+    const panel = document.getElementById('personPanel');
+    const oldScroll = getPanelScrollTop(panel);
+    const detections = state.personDetections;
+    if (!detections.length) {
+        host.innerHTML = '<div class="muted">Keine Kamera-Personenerkennung konfiguriert</div>';
+        return;
+    }
+
+    host.innerHTML = detections.map(item => {
+        const configured = !!item.configured;
+        const available = !!item.available;
+        const active = configured && available && !!item.active;
+        let label = 'Ruhe';
+        if (!configured) label = 'Nicht zugeordnet';
+        else if (!available) label = 'Nicht verfügbar';
+        else if (active) label = 'Person erkannt';
+
+        return `
+        <div class="motion-status-row ${active ? 'active' : 'idle'}">
+            <span class="motion-status-dot"></span>
+            <span class="motion-status-name">${esc(item.name)}</span>
+            <span class="motion-status-state">${esc(label)}</span>
+        </div>`;
+    }).join('');
+    if (panel) requestAnimationFrame(() => { setPanelScrollTop(panel, oldScroll); refreshPanelScroller(panel); });
+}
+
 function renderHistory() {
     if (!Array.isArray(state.history)) return;
     const signature = JSON.stringify(state.history);
@@ -771,6 +816,7 @@ function render() {
     renderCore();
     renderRooms();
     renderMotionSensors();
+    renderPersonDetections();
     renderHistory();
     requestAnimationFrame(refreshAllPanelScrollers);
 }
@@ -785,7 +831,7 @@ function handleMessage(data) {
 function saveUIState() {
     try {
         const panels = {};
-        for (const id of ['settingsAccordion', 'roomsAccordion', 'motionAccordion', 'protocolAccordion']) {
+        for (const id of ['settingsAccordion', 'roomsAccordion', 'motionAccordion', 'personAccordion', 'protocolAccordion']) {
             const el = document.getElementById(id);
             const panel = el ? el.querySelector('.accordion-panel') : null;
             panels[id] = {
@@ -806,7 +852,7 @@ function restoreUIState() {
         if (!raw) return;
         const saved = JSON.parse(raw);
         const panels = saved?.panels || {};
-        for (const id of ['settingsAccordion', 'roomsAccordion', 'motionAccordion', 'protocolAccordion']) {
+        for (const id of ['settingsAccordion', 'roomsAccordion', 'motionAccordion', 'personAccordion', 'protocolAccordion']) {
             const el = document.getElementById(id);
             const button = el?.querySelector('.accordion-toggle');
             const panel = el?.querySelector('.accordion-panel');

@@ -1,5 +1,11 @@
 # LCN Alarmanlage
 
+## Version 0.1.31
+
+0.1.31 ergänzt auf Basis von 0.1.30 ausschließlich eine neue aufklappbare Kachel-Rubrik **„Personenerkennung Kameras“**. Angezeigt werden die bereits vorhandenen Boolean-Variablen von **JV Terrasse**, **JV Hof Garage**, **JV links (Lagerplatz)** und **JV rechts (Lagerplatz)** als **„Ruhe“** oder **„Person erkannt“**.
+
+Die vier Variablen werden in der Instanzkonfiguration zugeordnet. Es entstehen **keine neuen Symcon-Variablen und keine neuen Timer**. Ihre `VM_UPDATE`-Meldungen aktualisieren ausschließlich die HTML-Visualisierung. Die komplette Alarmfunktion aus 0.1.30 – insbesondere Zwei-Bewegungen-Regel, Kamin/Küche-Sonderregel, Kamin-Sperrzeit, Paniklicht, TV, Dahua-Alarmlicht/Sirene, Quittierung und Neustartlogik – bleibt unverändert.
+
 ## Version 0.1.30
 
 Bewegungen von EG Wohnen Kamin werden zu jeder vollen Stunde zwischen Minute 25:00 und 34:59 bei der Alarmauslösung ignoriert. Der Melderstatus bleibt sichtbar; andere GUS und die übrigen Alarmregeln entsprechen 0.1.29.

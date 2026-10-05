@@ -2,7 +2,7 @@
     "elements": [
         {
             "type": "Label",
-            "label": "Version 0.1.27: optionale Dahua-TiOC-Alarmkameras als gekapselte Zusatzfunktion. Rot/Blau-Alarmlicht und Sirene werden in der Kachel unter „Einstellungen“ getrennt ausgewählt; die bestehende Alarm-, Licht-, Samsung-, E-Mail- und Neustartlogik bleibt erhalten. Keine zusätzlichen sichtbaren Symcon-Variablen."
+            "label": "Version 0.1.31: reine Visualisierungserweiterung auf Basis 0.1.30. Vier bereits vorhandene Boolean-Variablen der Kamera-Personenerkennung werden in einer eigenen aufklappbaren Rubrik als „Ruhe“ bzw. „Person erkannt“ angezeigt. Keine neuen Symcon-Variablen, keine neuen Timer und keinerlei Änderung der Alarmfunktion."
         },
         {
             "type": "List",
@@ -211,6 +211,46 @@
         {
             "type": "Label",
             "label": "Optional: die separat installierte Instanz „Dahua Alarmkameras“ auswählen. Ob Rot/Blau-Alarmlicht, Sirene oder beide bei einem Alarm verwendet werden, wird anschließend direkt in der Alarmanlagen-Kachel unter „Einstellungen“ gewählt. Beide Optionen sind nach dem Update zunächst AUS. Eine fehlende Dahua-Instanz beeinflusst den Alarmkern nicht."
+        },
+        {
+            "type": "Label",
+            "label": "Personenerkennung Kameras – nur Visualisierung. Die vier ausgewählten Boolean-Variablen werden ausschließlich angezeigt und niemals als Alarmquelle oder Schaltbefehl verwendet."
+        },
+        {
+            "type": "SelectVariable",
+            "name": "PersonJVTerrasseVariableID",
+            "caption": "Personenerkennung – JV Terrasse",
+            "validVariableTypes": [
+                0
+            ]
+        },
+        {
+            "type": "SelectVariable",
+            "name": "PersonJVHofGarageVariableID",
+            "caption": "Personenerkennung – JV Hof Garage",
+            "validVariableTypes": [
+                0
+            ]
+        },
+        {
+            "type": "SelectVariable",
+            "name": "PersonJVLagerplatzLinksVariableID",
+            "caption": "Personenerkennung – JV links (Lagerplatz)",
+            "validVariableTypes": [
+                0
+            ]
+        },
+        {
+            "type": "SelectVariable",
+            "name": "PersonJVLagerplatzRechtsVariableID",
+            "caption": "Personenerkennung – JV rechts (Lagerplatz)",
+            "validVariableTypes": [
+                0
+            ]
+        },
+        {
+            "type": "Label",
+            "label": "Diese Zuordnungen sind reine Anzeigequellen für die Kachel. VM_UPDATE aktualisiert nur die sichtbare Rubrik „Personenerkennung Kameras“. Scharfzustand, Zwei-Bewegungen-Regel, Kamin/Küche-Regel, Licht, TV, Dahua-Alarmlicht, Sirene und Quittierung bleiben vollständig unverändert."
         },
         {
             "type": "Label",

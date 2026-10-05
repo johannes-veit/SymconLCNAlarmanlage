@@ -90,6 +90,14 @@ class LCNAlarmanlage extends IPSModuleStrict
         // Symcon-Variablen persistent über Attribute aus der Kachelvisualisierung gesetzt.
         $this->RegisterPropertyInteger('DahuaInstanceID', 0);
 
+        // Reine Visualisierungsquellen fuer die Kamera-Personenerkennung.
+        // Diese Boolean-Variablen duerfen niemals Alarm, Licht, TV, Dahua-Ausgaenge
+        // oder andere Aktoren ausloesen. Es werden keine zusaetzlichen Symcon-Variablen erzeugt.
+        $this->RegisterPropertyInteger('PersonJVTerrasseVariableID', 0);
+        $this->RegisterPropertyInteger('PersonJVHofGarageVariableID', 0);
+        $this->RegisterPropertyInteger('PersonJVLagerplatzLinksVariableID', 0);
+        $this->RegisterPropertyInteger('PersonJVLagerplatzRechtsVariableID', 0);
+
         $this->RegisterAttributeInteger('ManualOverride', self::OVERRIDE_NONE);
         $this->RegisterAttributeBoolean('ArmedReady', false);
         $this->RegisterAttributeString('CurrentSession', '{}');
@@ -105,6 +113,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         // 0.1.16: nur technische Registrierungen fuer die zusaetzliche reine
         // Bewegungsmelder-Statusanzeige. Es werden dafuer KEINE Symcon-Variablen erzeugt.
         $this->RegisterAttributeString('RegisteredMotionStatusIDs', '[]');
+        // 0.1.31: ausschließlich technische Registrierungen der vier bereits
+        // vorhandenen Kamera-Personenerkennungsvariablen fuer die HTML-Visu.
+        $this->RegisterAttributeString('RegisteredPersonDetectionIDs', '[]');
         $this->RegisterAttributeString('RegisteredAcknowledgeIDs', '[]');
         $this->RegisterAttributeInteger('RegisteredPanicVariableID', 0);
 
@@ -417,6 +428,9 @@ class LCNAlarmanlage extends IPSModuleStrict
             } elseif ($this->IsMotionStatusVariable($SenderID)) {
                 // Reine Anzeigequelle: niemals Alarm, Scharfzustand oder Session veraendern.
                 $this->PushVisualizationState();
+            } elseif ($this->IsPersonDetectionVariable($SenderID)) {
+                // 0.1.31: Kamera-Personenerkennung ist ausschließlich eine Visu-Anzeige.
+                $this->PushVisualizationState();
             } elseif ($this->IsAcknowledgeVariable($SenderID) || $SenderID === $this->PanicGroupVariableID()) {
                 $this->HandleAuxiliaryUnavailable($SenderID);
             }
@@ -434,6 +448,9 @@ class LCNAlarmanlage extends IPSModuleStrict
         } elseif ($this->IsMotionStatusVariable($SenderID)) {
             // Nicht ueberwachte/automatisch gefundene GUS aktualisieren ausschliesslich
             // ihren Punkt in der Visualisierung. Keine Alarm- oder Startschutzlogik.
+            $this->PushVisualizationState();
+        } elseif ($this->IsPersonDetectionVariable($SenderID)) {
+            // 0.1.31: nur die sichtbare Kamera-Rubrik aktualisieren. Keine Funktion.
             $this->PushVisualizationState();
         }
         if ($this->IsAcknowledgeVariable($SenderID)) {
@@ -1359,6 +1376,7 @@ class LCNAlarmanlage extends IPSModuleStrict
 
         $this->UnregisterOldSensorMessages();
         $this->UnregisterOldMotionStatusMessages();
+        $this->UnregisterOldPersonDetectionMessages();
         $this->UnregisterOldAcknowledgeMessages();
         $this->UnregisterOldPanicReference();
 
@@ -1403,6 +1421,10 @@ class LCNAlarmanlage extends IPSModuleStrict
         $this->SetBuffer('NotificationWarnings', $this->Encode($notificationWarnings));
         $this->SetBuffer('TVWarnings', $this->Encode($tvWarnings));
         $this->SetBuffer('DahuaWarnings', $this->Encode($dahuaWarnings));
+
+        // Reine Anzeigequellen sofort abonnieren. Fehlerhafte/fehlende Kamera-
+        // Variablen beeinflussen ConfigurationOK und den Alarmkern ausdrücklich nicht.
+        $this->RegisterPersonDetectionMessages();
 
         foreach ($notificationWarnings as $warning) {
             IPS_LogMessage('LCN Alarmanlage #' . $this->InstanceID, 'Benachrichtigung: ' . $warning);
@@ -2504,6 +2526,7 @@ class LCNAlarmanlage extends IPSModuleStrict
             'dahuaSirenEnabled' => $this->ReadAttributeBoolean('DahuaSirenEnabled'),
             'sensors' => $sensors,
             'motionSensors' => $motionSensors,
+            'personDetections' => $this->BuildPersonDetectionState(),
             'history' => $history
         ];
     }
@@ -4392,6 +4415,129 @@ class LCNAlarmanlage extends IPSModuleStrict
         }
 
         $this->WriteAttributeString('RegisteredSensorIDs', '[]');
+    }
+
+    /**
+     * Registriert ausschließlich VM_UPDATE/OM_UNREGISTER für die vier vorhandenen
+     * Boolean-Variablen der Kamera-Personenerkennung. Keine Variable, kein Timer,
+     * kein Alarmereignis und kein Aktor wird dadurch erzeugt oder verändert.
+     */
+    private function RegisterPersonDetectionMessages(): void
+    {
+        $registered = [];
+
+        foreach ($this->PersonDetectionVariableIDs() as $variableID) {
+            if ($variableID <= 0 || !IPS_VariableExists($variableID)) {
+                continue;
+            }
+
+            try {
+                $variable = IPS_GetVariable($variableID);
+                if ((int) ($variable['VariableType'] ?? -1) !== VARIABLETYPE_BOOLEAN) {
+                    $this->SendDebug('PersonDetection', 'Variable #' . $variableID . ' ist nicht Boolean und wird nur als nicht verfügbar angezeigt.', 0);
+                    continue;
+                }
+
+                $this->RegisterMessage($variableID, VM_UPDATE);
+                $this->RegisterMessage($variableID, OM_UNREGISTER);
+                $this->RegisterReference($variableID);
+                $registered[] = $variableID;
+            } catch (Throwable $e) {
+                // Eine reine Anzeigequelle darf niemals die Alarmkonfiguration stören.
+                $this->SendDebug('PersonDetection', 'Variable #' . $variableID . ' konnte nicht registriert werden: ' . $e->getMessage(), 0);
+            }
+        }
+
+        $this->WriteAttributeString(
+            'RegisteredPersonDetectionIDs',
+            $this->Encode(array_values(array_unique($registered)))
+        );
+    }
+
+    private function UnregisterOldPersonDetectionMessages(): void
+    {
+        $old = json_decode($this->ReadAttributeString('RegisteredPersonDetectionIDs'), true);
+        if (!is_array($old)) {
+            $old = [];
+        }
+
+        foreach (array_values(array_unique(array_map('intval', $old))) as $variableID) {
+            if ($variableID <= 0) {
+                continue;
+            }
+            try {
+                $this->UnregisterMessage($variableID, VM_UPDATE);
+                $this->UnregisterMessage($variableID, OM_UNREGISTER);
+                $this->UnregisterReference($variableID);
+            } catch (Throwable $e) {
+                $this->SendDebug('PersonDetection', 'Alte Anzeige-Registrierung #' . $variableID . ' konnte nicht vollständig entfernt werden: ' . $e->getMessage(), 0);
+            }
+        }
+
+        $this->WriteAttributeString('RegisteredPersonDetectionIDs', '[]');
+    }
+
+    private function PersonDetectionVariableIDs(): array
+    {
+        $ids = [
+            $this->ReadPropertyInteger('PersonJVTerrasseVariableID'),
+            $this->ReadPropertyInteger('PersonJVHofGarageVariableID'),
+            $this->ReadPropertyInteger('PersonJVLagerplatzLinksVariableID'),
+            $this->ReadPropertyInteger('PersonJVLagerplatzRechtsVariableID')
+        ];
+
+        return array_values(array_unique(array_filter(
+            array_map('intval', $ids),
+            static fn (int $id): bool => $id > 0
+        )));
+    }
+
+    private function IsPersonDetectionVariable(int $VariableID): bool
+    {
+        return $VariableID > 0 && in_array($VariableID, $this->PersonDetectionVariableIDs(), true);
+    }
+
+    /**
+     * Liest die vier Kamera-Booleanwerte ausschließlich für BuildVisualizationState().
+     * Nicht konfigurierte oder entfernte Quellen werden sichtbar als nicht verfügbar
+     * markiert, ohne einen Konfigurationsfehler der Alarmanlage zu erzeugen.
+     */
+    private function BuildPersonDetectionState(): array
+    {
+        $definitions = [
+            ['property' => 'PersonJVTerrasseVariableID', 'name' => 'JV Terrasse'],
+            ['property' => 'PersonJVHofGarageVariableID', 'name' => 'JV Hof Garage'],
+            ['property' => 'PersonJVLagerplatzLinksVariableID', 'name' => 'JV links (Lagerplatz)'],
+            ['property' => 'PersonJVLagerplatzRechtsVariableID', 'name' => 'JV rechts (Lagerplatz)']
+        ];
+
+        $result = [];
+        foreach ($definitions as $definition) {
+            $variableID = $this->ReadPropertyInteger((string) $definition['property']);
+            $entry = [
+                'id' => $variableID,
+                'name' => (string) $definition['name'],
+                'configured' => $variableID > 0,
+                'available' => false,
+                'active' => false
+            ];
+
+            if ($variableID > 0 && IPS_VariableExists($variableID)) {
+                try {
+                    $variable = IPS_GetVariable($variableID);
+                    if ((int) ($variable['VariableType'] ?? -1) === VARIABLETYPE_BOOLEAN) {
+                        $entry['available'] = true;
+                        $entry['active'] = (bool) GetValue($variableID);
+                    }
+                } catch (Throwable $e) {
+                    // Anzeige bleibt "Nicht verfügbar"; Alarmkern bleibt unangetastet.
+                }
+            }
+
+            $result[] = $entry;
+        }
+
+        return $result;
     }
 
     private function UnregisterOldMotionStatusMessages(): void

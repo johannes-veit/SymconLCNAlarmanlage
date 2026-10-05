@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.31
+
+- Neue aufklappbare Visu-Rubrik **„Personenerkennung Kameras“** mit vier festen Anzeigen: JV Terrasse, JV Hof Garage, JV links (Lagerplatz), JV rechts (Lagerplatz).
+- Verwendet ausschließlich vier bereits vorhandene Boolean-Variablen, die in der Instanzkonfiguration ausgewählt werden. Anzeige: `false` = „Ruhe“, `true` = „Person erkannt“.
+- Keine neuen Symcon-Variablen, keine neuen Timer, keine Aktorbefehle und keine Verwendung der Kamera-Personenerkennung als Alarmquelle.
+- Änderungen dieser vier Boolean-Variablen führen ausschließlich zu einem Update der HTML-Visualisierung.
+- Alarmkern und sämtliche Funktionen aus 0.1.30 bleiben unverändert.
+
 ## 0.1.30
 
 - EG Wohnen Kamin: Bewegungsflanken werden jede Stunde von Minute 25:00 bis 34:59 Ortszeit für den Alarm ignoriert. Der physische Zustand wird weiterhin als Baseline und in der Statusanzeige aktualisiert, sodass nach 35:00 kein nachträglicher Alarmimpuls entsteht.
